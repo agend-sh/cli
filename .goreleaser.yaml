@@ -1,0 +1,58 @@
+version: 2
+
+project_name: agend
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/agend
+    binary: agend
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+brews:
+  - repository:
+      owner: agend-sh
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://agend.sh"
+    description: "CLI for agend — remote environments for AI agents"
+    license: "MIT"
+    install: |
+      bin.install "agend"
+    test: |
+      system "#{bin}/agend", "version"
+    skip_upload: true
+
+release:
+  github:
+    owner: agend-sh
+    name: cli
+  prerelease: auto

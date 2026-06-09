@@ -1,0 +1,281 @@
+syntax = "proto3";
+
+package agentd.v1;
+
+option go_package = "github.com/agend-sh/daemon/proto/agentd/v1;agentdv1";
+
+// AgentService is the gRPC API exposed by the daemon inside each microVM.
+// Clients send commands; the daemon executes them inside the box and returns
+// structured results, including support for long-running and interactive
+// applications.
+service AgentService {
+
+  // --- Shell ---
+
+  // Execute a command. Returns stdout/stderr for completed commands,
+  // or status "awaiting_input" if the process is waiting for input. The
+  // daemon handles execution details, including interactive applications,
+  // internally.
+  rpc Exec(ExecRequest) returns (ExecResponse);
+
+  // Send text input to a process waiting for input (password, confirmation).
+  // Appends a newline automatically.
+  rpc Input(InputRequest) returns (InputResponse);
+
+  // Send raw bytes to an interactive program (vim keystrokes, REPL code).
+  // No newline appended — sends exactly what you provide.
+  rpc RawInput(RawInputRequest) returns (RawInputResponse);
+
+  // Send SIGINT (Ctrl+C) to interrupt a running command.
+  rpc Interrupt(InterruptRequest) returns (InterruptResponse);
+
+  // --- Background Tasks ---
+
+  // Get the output of a background task started with run_in_background.
+  rpc TaskOutput(TaskOutputRequest) returns (TaskOutputResponse);
+
+  // Stop a running background task.
+  rpc TaskStop(TaskStopRequest) returns (TaskStopResponse);
+
+  // --- Files ---
+
+  // Read a file's contents.
+  rpc FileGet(FileGetRequest) returns (FileGetResponse);
+
+  // Write content to a file.
+  rpc FilePut(FilePutRequest) returns (FilePutResponse);
+
+  // Move or rename a file.
+  rpc FileMove(FileMoveRequest) returns (FileMoveResponse);
+
+  // Read a chunk of a file (for large file transfers).
+  rpc FileGetChunked(FileGetChunkedRequest) returns (FileGetChunkedResponse);
+
+  // Write a chunk to a file (for large file transfers).
+  rpc FilePutChunked(FilePutChunkedRequest) returns (FilePutChunkedResponse);
+
+  // --- Ports ---
+
+  // Expose a port to the internet via Cloudflare Tunnel.
+  rpc PortExpose(PortExposeRequest) returns (PortExposeResponse);
+
+  // Unexpose a previously exposed port.
+  rpc PortUnexpose(PortUnexposeRequest) returns (PortUnexposeResponse);
+
+  // List currently exposed ports.
+  rpc PortList(PortListRequest) returns (PortListResponse);
+
+  // --- Health ---
+
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// =============================================================================
+// Shell
+// =============================================================================
+
+message ExecRequest {
+  string command = 1;
+  uint32 timeout_ms = 2;          // default: 30000
+  bool interactive = 3;           // keep alive on timeout (for REPLs, TUIs)
+  bool run_in_background = 4;     // return task_id immediately
+  uint32 tail_lines = 5;          // return only last N lines of output
+  uint32 head_lines = 6;          // return only first N lines of output
+}
+
+message ExecResponse {
+  // "completed", "awaiting_input", "timeout"
+  string status = 1;
+
+  // Set when status = "completed"
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+
+  // Set when status = "awaiting_input"
+  string prompt_type = 5;         // "password", "confirmation", "interactive"
+  string prompt_text = 6;
+
+  // Set when interactive = true and status = "awaiting_input"
+  string screen = 7;              // current terminal screen content
+
+  // Set when run_in_background = true
+  string task_id = 8;
+
+  // Output truncation info
+  bool truncated = 9;
+  uint32 total_lines = 10;
+  uint32 shown_lines = 11;
+}
+
+message InputRequest {
+  string input = 1;               // text input (newline appended automatically)
+}
+
+message InputResponse {
+  string status = 1;              // "completed", "awaiting_input", "timeout"
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string prompt_type = 5;
+  string prompt_text = 6;
+}
+
+message RawInputRequest {
+  string input = 1;               // raw bytes sent directly to PTY
+}
+
+message RawInputResponse {
+  string status = 1;              // "completed", "awaiting_input"
+  string screen = 2;              // current terminal screen content
+  int32 exit_code = 3;            // set when status = "completed"
+}
+
+message InterruptRequest {}
+
+message InterruptResponse {
+  string status = 1;
+}
+
+// =============================================================================
+// Background Tasks
+// =============================================================================
+
+message TaskOutputRequest {
+  string task_id = 1;
+}
+
+message TaskOutputResponse {
+  string status = 1;              // "running", "completed"
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+}
+
+message TaskStopRequest {
+  string task_id = 1;
+}
+
+message TaskStopResponse {}
+
+// =============================================================================
+// Files
+// =============================================================================
+
+message FileGetRequest {
+  string path = 1;
+  string encoding = 2;           // "text" (default) or "base64"
+}
+
+message FileGetResponse {
+  string content = 1;
+  int64 size = 2;
+  string mode = 3;
+  string checksum = 4;           // SHA256
+}
+
+message FilePutRequest {
+  string path = 1;
+  string content = 2;
+  string encoding = 3;           // "text" (default) or "base64"
+  string mode = 4;               // e.g. "0644"
+  bool create_dirs = 5;
+  bool overwrite = 6;
+}
+
+message FilePutResponse {
+  int64 size = 1;
+  string checksum = 2;
+}
+
+message FileMoveRequest {
+  string source = 1;
+  string destination = 2;
+}
+
+message FileMoveResponse {}
+
+// =============================================================================
+// Chunked File Transfers
+// =============================================================================
+
+message FileGetChunkedRequest {
+  string path = 1;
+  int64 offset = 2;            // byte offset to read from
+  int32 chunk_size = 3;        // bytes to read (default: 1MB, max: 10MB)
+}
+
+message FileGetChunkedResponse {
+  bytes data = 1;              // raw chunk bytes
+  int64 offset = 2;            // offset this chunk starts at
+  int32 size = 3;              // actual bytes in this chunk
+  int64 total_size = 4;        // total file size
+  string checksum = 5;         // SHA256 of this chunk
+  string file_checksum = 6;    // SHA256 of entire file (only in first chunk)
+}
+
+message FilePutChunkedRequest {
+  string path = 1;
+  bytes data = 2;              // raw chunk bytes
+  int64 offset = 3;            // byte offset to write at
+  int64 total_size = 4;        // total file size (for pre-allocation, first chunk)
+  string checksum = 5;         // SHA256 of this chunk (for verification)
+  string mode = 6;             // file permissions (e.g. "0644", first chunk only)
+  bool create_dirs = 7;        // create parent directories (first chunk only)
+}
+
+message FilePutChunkedResponse {
+  int64 bytes_written = 1;     // bytes written in this chunk
+  int64 total_written = 2;     // total bytes written so far
+  string checksum = 3;         // SHA256 of entire file (only when complete)
+}
+
+// =============================================================================
+// Ports
+// =============================================================================
+
+message PortExposeRequest {
+  uint32 port = 1;
+  string domain = 2;          // optional: custom domain (e.g., "app.example.com")
+  string cf_token = 3;        // optional: Cloudflare API token for custom domain
+  string cf_zone_id = 4;      // optional: Cloudflare zone ID for custom domain
+  string cf_account_id = 5;   // optional: Cloudflare account ID for custom domain
+}
+
+message PortExposeResponse {
+  string url = 1;
+  uint32 port = 2;
+  string domain = 3;  // set if custom domain was used
+}
+
+message PortUnexposeRequest {
+  uint32 port = 1;
+  // Optional: unbind only this domain from the port. If empty, all domains
+  // (and the quick tunnel, if any) on the port are removed.
+  string domain = 2;
+}
+
+message PortUnexposeResponse {}
+
+message PortListRequest {}
+
+message PortListResponse {
+  repeated ExposedPort ports = 1;
+}
+
+message ExposedPort {
+  uint32 port = 1;
+  string url = 2;
+  string domain = 3;
+}
+
+// =============================================================================
+// Health
+// =============================================================================
+
+message PingRequest {}
+
+message PingResponse {
+  string version = 1;
+  uint64 uptime_seconds = 2;
+}
