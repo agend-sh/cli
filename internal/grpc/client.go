@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,15 @@ func Dial(ctx context.Context, addr, secret, sessionToken string) (*Client, erro
 			MinVersion: tls.VersionTLS12,
 		})))
 	} else {
+		// Plaintext gRPC. The auth interceptor attaches the session token to
+		// every call, so allowing this for arbitrary hosts would leak
+		// credentials to anything that controls the stored endpoint (e.g. a
+		// tampered credentials.json or a malicious control-plane response).
+		// Only loopback/private addresses are allowed, unless the user
+		// explicitly opts in via AGEND_INSECURE_TRANSPORT=1.
+		if !isPrivateAddr(addr) && os.Getenv("AGEND_INSECURE_TRANSPORT") != "1" {
+			return nil, fmt.Errorf("refusing plaintext gRPC to non-private address %q — use an https:// endpoint, or set AGEND_INSECURE_TRANSPORT=1 if you really want this", addr)
+		}
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
@@ -86,6 +96,26 @@ func needsTCPTunnel(addr string) bool {
 	lower = strings.TrimPrefix(lower, "https://")
 	return strings.HasSuffix(lower, ".trycloudflare.com") ||
 		strings.Contains(lower, ".trycloudflare.com:")
+}
+
+// isPrivateAddr reports whether addr points at a loopback, RFC 1918,
+// link-local, or unique-local destination — the only places plaintext gRPC
+// is acceptable (local dev daemons, TAP-networked dev VMs). Hostnames other
+// than "localhost" are NOT resolved: a DNS name could re-resolve to a public
+// host, so anything non-literal is treated as public.
+func isPrivateAddr(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // needsTLS returns true if the address is a tunnel or cloud endpoint requiring TLS.

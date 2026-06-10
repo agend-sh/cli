@@ -35,15 +35,15 @@ func newTaskOutputCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("status: %s\n", resp.Status)
+			fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
 			if resp.Status == "completed" {
 				fmt.Printf("exit_code: %d\n", resp.ExitCode)
 			}
 			if resp.Stdout != "" {
-				fmt.Println(resp.Stdout)
+				fmt.Println(sanitizeForTTY(resp.Stdout, os.Stdout))
 			}
 			if resp.Stderr != "" {
-				fmt.Fprintln(os.Stderr, resp.Stderr)
+				fmt.Fprintln(os.Stderr, sanitizeForTTY(resp.Stderr, os.Stderr))
 			}
 			return nil
 		},

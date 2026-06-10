@@ -23,7 +23,7 @@ func newPingCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("ping failed: %w", err)
 				}
-				fmt.Printf("agentd %s (uptime: %ds)\n", resp.Version, resp.UptimeSeconds)
+				fmt.Printf("agentd %s (uptime: %ds)\n", sanitizeRemote(resp.Version), resp.UptimeSeconds)
 				return nil
 			})
 		},

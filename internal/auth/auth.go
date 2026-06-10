@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,7 +66,27 @@ func saveConfig(cfg *config) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	// Atomic write: temp file in the same directory, then rename. A crash
+	// mid-write must never leave a truncated credentials file behind.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".credentials-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op after successful rename
+
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmp.Name(), path)
 }
 
 func SaveToken(token string) error {
@@ -185,8 +208,20 @@ func BrowserLogin() (string, error) {
 	}
 	defer listener.Close()
 
+	// Unguessable state nonce, embedded in the callback path. It travels
+	// CLI → browser → agend.sh → back to the loopback server, so only the
+	// flow this CLI started can hit the callback — a malicious local web
+	// page racing the loopback port can't log the user into an
+	// attacker-controlled account.
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return "", fmt.Errorf("generate state nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+
 	port := listener.Addr().(*net.TCPAddr).Port
-	callbackURL := fmt.Sprintf("http://localhost:%d/callback", port)
+	callbackPath := "/callback/" + nonce
+	callbackURL := fmt.Sprintf("http://localhost:%d%s", port, callbackPath)
 	authURL := fmt.Sprintf("https://agend.sh/auth/cli?callback=%s", callbackURL)
 
 	openBrowser(authURL)
@@ -195,7 +230,12 @@ func BrowserLogin() (string, error) {
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/callback/", func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.URL.Path), []byte(callbackPath)) != 1 {
+			http.Error(w, "Invalid callback", http.StatusForbidden)
+			return
+		}
+
 		token := r.URL.Query().Get("token")
 		if token == "" {
 			errCh <- errors.New("no token in callback")

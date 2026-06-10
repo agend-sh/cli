@@ -14,7 +14,6 @@ import (
 func newLoginCmd() *cobra.Command {
 	var token string
 	var email string
-	var password string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -30,9 +29,11 @@ func newLoginCmd() *cobra.Command {
 				return nil
 			}
 
-			// Email/password login
+			// Email/password login. The password is never accepted as a
+			// flag — argv is visible to every process via ps. Scripts use
+			// the AGEND_PASSWORD env var instead.
 			if email != "" {
-				pw := password
+				pw := os.Getenv("AGEND_PASSWORD")
 				if pw == "" {
 					fmt.Fprint(os.Stderr, "Password: ")
 					pwBytes, err := term.ReadPassword(int(syscall.Stdin))
@@ -77,8 +78,7 @@ func newLoginCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&token, "token", "", "API token (skip interactive login)")
-	cmd.Flags().StringVar(&email, "email", "", "login with email/password")
-	cmd.Flags().StringVar(&password, "password", "", "password (non-interactive, for scripts)")
+	cmd.Flags().StringVar(&email, "email", "", "login with email/password (set AGEND_PASSWORD for non-interactive use)")
 
 	return cmd
 }

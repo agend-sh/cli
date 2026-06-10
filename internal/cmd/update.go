@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,8 +80,14 @@ On the next launch, the new version takes effect automatically.`,
 
 			fmt.Printf("found %s (current: %s)\n", release.TagName, currentVersion)
 
-			// Download tar.gz archive
+			// Fetch the expected checksum for this platform's archive
 			archiveName := fmt.Sprintf("agend-%s-%s-%s.tar.gz", latest, runtime.GOOS, runtime.GOARCH)
+			expectedSum, err := fetchChecksum(client, release.TagName, archiveName)
+			if err != nil {
+				return fmt.Errorf("fetch checksums: %w", err)
+			}
+
+			// Download tar.gz archive
 			url := fmt.Sprintf("%s/%s/%s", downloadURL, release.TagName, archiveName)
 
 			fmt.Printf("Downloading %s... ", archiveName)
@@ -92,8 +101,24 @@ On the next launch, the new version takes effect automatically.`,
 				return fmt.Errorf("download failed: HTTP %d", dlResp.StatusCode)
 			}
 
+			// Spool to a temp file so the whole archive can be checksummed
+			// before anything is extracted or installed.
+			tmpArchive, err := downloadAndVerify(dlResp.Body, expectedSum)
+			if tmpArchive != "" {
+				defer os.Remove(tmpArchive)
+			}
+			if err != nil {
+				return err
+			}
+
+			archiveFile, err := os.Open(tmpArchive)
+			if err != nil {
+				return err
+			}
+			defer archiveFile.Close()
+
 			// Extract agend binary from tar.gz
-			tmpBinary, err := extractBinaryFromTarGz(dlResp.Body, "agend")
+			tmpBinary, err := extractBinaryFromTarGz(archiveFile, "agend")
 			if err != nil {
 				return fmt.Errorf("extract failed: %w", err)
 			}
@@ -123,6 +148,62 @@ On the next launch, the new version takes effect automatically.`,
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "re-download even if already up to date")
 
 	return cmd
+}
+
+// fetchChecksum downloads checksums.txt from the release and returns the
+// expected sha256 for the named archive. A missing checksums file or a
+// missing entry is an error — the update never proceeds unverified.
+func fetchChecksum(client *http.Client, tag, archiveName string) (string, error) {
+	url := fmt.Sprintf("%s/%s/checksums.txt", downloadURL, tag)
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("checksums.txt: HTTP %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 2 && fields[1] == archiveName {
+			if len(fields[0]) != 64 {
+				return "", fmt.Errorf("malformed checksum for %s", archiveName)
+			}
+			return strings.ToLower(fields[0]), nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("no checksum entry for %s in checksums.txt", archiveName)
+}
+
+// downloadAndVerify spools the archive to a temp file while hashing it,
+// then compares against the expected sha256. Returns the temp file path;
+// on mismatch the file path is still returned (so the caller can clean up)
+// along with the error.
+func downloadAndVerify(r io.Reader, expectedSum string) (string, error) {
+	tmp, err := os.CreateTemp("", "agend-archive-*.tar.gz")
+	if err != nil {
+		return "", err
+	}
+
+	hasher := sha256.New()
+	_, err = io.Copy(tmp, io.TeeReader(r, hasher))
+	tmp.Close()
+	if err != nil {
+		return tmp.Name(), fmt.Errorf("download failed: %w", err)
+	}
+
+	actualSum := hex.EncodeToString(hasher.Sum(nil))
+	if actualSum != expectedSum {
+		return tmp.Name(), fmt.Errorf("checksum mismatch for downloaded archive:\n  expected: %s\n  got:      %s\nrefusing to install", expectedSum, actualSum)
+	}
+
+	return tmp.Name(), nil
 }
 
 // swapBinary replaces the current executable with the file at newPath.

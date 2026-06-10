@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func newDomainCmd() *cobra.Command {
@@ -21,21 +24,34 @@ func newDomainCmd() *cobra.Command {
 }
 
 func newDomainAddCmd() *cobra.Command {
-	var cfToken string
-
 	cmd := &cobra.Command{
 		Use:   "add <zone>",
 		Short: "Register a domain zone for port expose",
-		Long:  "Register a Cloudflare-managed domain zone. Requires a Cloudflare API token with DNS and Tunnel permissions.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Register a Cloudflare-managed domain zone. Requires a Cloudflare API token
+with DNS and Tunnel permissions.
+
+The token is read from the AGEND_CF_TOKEN environment variable, or prompted
+for interactively. It is never accepted as a flag — argv is visible to every
+process via ps.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			zone := strings.TrimSpace(args[0])
 			if zone == "" {
 				return fmt.Errorf("zone is required")
 			}
 
+			cfToken := os.Getenv("AGEND_CF_TOKEN")
+			if cfToken == "" && term.IsTerminal(int(syscall.Stdin)) {
+				fmt.Fprint(os.Stderr, "Cloudflare API token: ")
+				tokenBytes, err := term.ReadPassword(int(syscall.Stdin))
+				if err != nil {
+					return fmt.Errorf("failed to read token: %w", err)
+				}
+				fmt.Fprintln(os.Stderr)
+				cfToken = strings.TrimSpace(string(tokenBytes))
+			}
 			if cfToken == "" {
-				return fmt.Errorf("--cf-token is required\n\nCreate a token at https://dash.cloudflare.com/profile/api-tokens with:\n  - Zone:DNS:Edit\n  - Zone:Zone:Read\n  - Account:Cloudflare Tunnel:Edit")
+				return fmt.Errorf("a Cloudflare API token is required — set AGEND_CF_TOKEN\n\nCreate a token at https://dash.cloudflare.com/profile/api-tokens with:\n  - Zone:DNS:Edit\n  - Zone:Zone:Read\n  - Account:Cloudflare Tunnel:Edit")
 			}
 
 			client, err := apiClient()
@@ -58,9 +74,6 @@ func newDomainAddCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&cfToken, "cf-token", "", "Cloudflare API token (DNS + Tunnel permissions)")
-	cmd.MarkFlagRequired("cf-token")
 
 	return cmd
 }

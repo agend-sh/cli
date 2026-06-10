@@ -35,18 +35,18 @@ func newInputCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("status: %s\n", resp.Status)
+			fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
 			if resp.Stdout != "" {
-				fmt.Println(resp.Stdout)
+				fmt.Println(sanitizeForTTY(resp.Stdout, os.Stdout))
 			}
 			if resp.Stderr != "" {
-				fmt.Fprintln(os.Stderr, resp.Stderr)
+				fmt.Fprintln(os.Stderr, sanitizeForTTY(resp.Stderr, os.Stderr))
 			}
 			if resp.Status == "completed" {
 				fmt.Printf("exit_code: %d\n", resp.ExitCode)
 			}
 			if resp.PromptType != "" {
-				fmt.Printf("prompt_type: %s\n", resp.PromptType)
+				fmt.Printf("prompt_type: %s\n", sanitizeRemote(resp.PromptType))
 			}
 			return nil
 		},
@@ -70,7 +70,7 @@ func newInterruptCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("interrupt failed: %w", err)
 				}
-				fmt.Printf("status: %s\n", resp.Status)
+				fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
 				return nil
 			})
 		},

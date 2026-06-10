@@ -3,6 +3,8 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -463,7 +465,11 @@ func callTaskStop(ctx context.Context, client *agentgrpc.Client, args map[string
 // Uses chunked transfer internally. No file content enters the LLM context.
 func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
 	remotePath := strArg(args, "remote_path")
-	localPath := strArg(args, "local_path")
+
+	localPath, err := resolveLocalPath(strArg(args, "local_path"))
+	if err != nil {
+		return fmt.Sprintf("download failed: %v", err), true
+	}
 
 	const chunkSize = 1024 * 1024 // 1MB
 
@@ -477,13 +483,16 @@ func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[st
 		return fmt.Sprintf("download failed: %v", err), true
 	}
 
-	f, err := os.Create(localPath)
+	f, err := createLocalFile(localPath)
 	if err != nil {
 		return fmt.Sprintf("create local file: %v", err), true
 	}
 	defer f.Close()
 
-	if _, err := f.Write(resp.Data); err != nil {
+	hasher := sha256.New()
+	out := io.MultiWriter(f, hasher)
+
+	if _, err := out.Write(resp.Data); err != nil {
 		return fmt.Sprintf("write: %v", err), true
 	}
 
@@ -500,10 +509,22 @@ func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[st
 		if err != nil {
 			return fmt.Sprintf("download at offset %d: %v", downloaded, err), true
 		}
-		if _, err := f.Write(chunk.Data); err != nil {
+		if _, err := out.Write(chunk.Data); err != nil {
 			return fmt.Sprintf("write: %v", err), true
 		}
 		downloaded += int64(chunk.Size)
+	}
+
+	// Verify the received bytes against the checksum the daemon reported
+	// for the whole file, so a corrupted or torn transfer can't be
+	// reported as a success.
+	if fileChecksum != "" {
+		actual := hex.EncodeToString(hasher.Sum(nil))
+		if actual != strings.ToLower(fileChecksum) {
+			f.Close()
+			os.Remove(localPath)
+			return fmt.Sprintf("download failed: checksum mismatch (expected %s, got %s) — file removed, the remote file may have changed mid-transfer; retry", fileChecksum, actual), true
+		}
 	}
 
 	return fmt.Sprintf("downloaded %s → %s (%d bytes, sha256: %s)", remotePath, localPath, totalSize, fileChecksum), false
@@ -512,8 +533,12 @@ func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[st
 // callFileUpload uploads a local file to the remote environment.
 // Uses chunked transfer internally. Atomic write on the remote side.
 func callFileUpload(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
-	localPath := strArg(args, "local_path")
 	remotePath := strArg(args, "remote_path")
+
+	localPath, err := resolveLocalPath(strArg(args, "local_path"))
+	if err != nil {
+		return fmt.Sprintf("upload failed: %v", err), true
+	}
 
 	data, err := os.ReadFile(localPath)
 	if err != nil {

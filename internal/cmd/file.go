@@ -36,8 +36,8 @@ func newFileGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Print(resp.Content)
-			fmt.Fprintf(os.Stderr, "\n--- size: %d, mode: %s, sha256: %s ---\n", resp.Size, resp.Mode, resp.Checksum)
+			fmt.Print(sanitizeForTTY(resp.Content, os.Stdout))
+			fmt.Fprintf(os.Stderr, "\n--- size: %d, mode: %s, sha256: %s ---\n", resp.Size, sanitizeRemote(resp.Mode), sanitizeRemote(resp.Checksum))
 			return nil
 		},
 	}

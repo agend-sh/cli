@@ -52,21 +52,21 @@ func newExecCmd() *cobra.Command {
 			}
 
 			if interactive {
-				fmt.Printf("status: %s\n", resp.Status)
+				fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
 				if resp.Screen != "" {
-					fmt.Println(resp.Screen)
+					fmt.Println(sanitizeRemote(resp.Screen))
 				}
 				if resp.PromptType != "" {
-					fmt.Printf("prompt_type: %s\n", resp.PromptType)
+					fmt.Printf("prompt_type: %s\n", sanitizeRemote(resp.PromptType))
 				}
 				return nil
 			}
 
 			if resp.Stdout != "" {
-				fmt.Println(resp.Stdout)
+				fmt.Println(sanitizeForTTY(resp.Stdout, os.Stdout))
 			}
 			if resp.Stderr != "" {
-				fmt.Fprintln(os.Stderr, resp.Stderr)
+				fmt.Fprintln(os.Stderr, sanitizeForTTY(resp.Stderr, os.Stderr))
 			}
 
 			if resp.Status == "timeout" {

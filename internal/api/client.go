@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -13,6 +15,7 @@ const DefaultBaseURL = "https://api.agend.sh"
 
 type Client struct {
 	baseURL    string
+	baseURLErr error
 	token      string
 	httpClient *http.Client
 }
@@ -22,11 +25,37 @@ func New(baseURL, token string) *Client {
 		baseURL = DefaultBaseURL
 	}
 	return &Client{
-		baseURL: baseURL,
-		token:   token,
+		baseURL:    baseURL,
+		baseURLErr: validateBaseURL(baseURL),
+		token:      token,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+// validateBaseURL rejects API base URLs that would send the bearer token
+// (and login passwords) in cleartext. The api_url config field is meant for
+// dev/testing, so plain http is allowed only toward loopback.
+func validateBaseURL(baseURL string) error {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid api_url %q: %w", baseURL, err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("refusing plain-http api_url %q: credentials would be sent in cleartext — use https (http is allowed for localhost only)", baseURL)
+	default:
+		return fmt.Errorf("invalid api_url %q: scheme must be https", baseURL)
 	}
 }
 
@@ -191,6 +220,10 @@ func (c *Client) ResolveDomainCredentials(zone string) (*DomainCredentials, erro
 // HTTP helpers
 
 func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
+	if c.baseURLErr != nil {
+		return nil, c.baseURLErr
+	}
+
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

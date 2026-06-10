@@ -140,7 +140,7 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 				"properties": map[string]any{
 					"environment": envProp,
 					"remote_path": map[string]any{"type": "string", "description": "Absolute path on the remote environment"},
-					"local_path":  map[string]any{"type": "string", "description": "Local path to save the file"},
+					"local_path":  map[string]any{"type": "string", "description": "Local path to save the file. Must be inside the MCP server's working directory (or AGEND_LOCAL_ROOT if set); paths outside it are rejected."},
 				},
 				"required": []string{"environment", "remote_path", "local_path"},
 			},
@@ -152,7 +152,7 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 				"type": "object",
 				"properties": map[string]any{
 					"environment": envProp,
-					"local_path":  map[string]any{"type": "string", "description": "Local file path to upload"},
+					"local_path":  map[string]any{"type": "string", "description": "Local file path to upload. Must be inside the MCP server's working directory (or AGEND_LOCAL_ROOT if set); paths outside it are rejected."},
 					"remote_path": map[string]any{"type": "string", "description": "Absolute path on the remote environment"},
 					"mode":        map[string]any{"type": "string", "description": "File permissions (e.g. '0644')"},
 					"create_dirs": map[string]any{"type": "boolean", "description": "Create parent directories"},

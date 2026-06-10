@@ -43,27 +43,30 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -fsSL "$URL" -o "${TMPDIR}/${ARCHIVE}"
 curl -fsSL "$CHECKSUMS_URL" -o "${TMPDIR}/checksums.txt"
 
-# Verify checksum
+# Verify checksum (fail closed: a missing entry or missing sha256 tool aborts)
 cd "$TMPDIR"
-EXPECTED=$(grep "${ARCHIVE}" checksums.txt | awk '{print $1}')
-if [ -n "$EXPECTED" ]; then
-  if command -v sha256sum >/dev/null 2>&1; then
-    ACTUAL=$(sha256sum "${ARCHIVE}" | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    ACTUAL=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
-  else
-    echo "Warning: no sha256sum or shasum found, skipping checksum verification"
-    ACTUAL="$EXPECTED"
-  fi
-
-  if [ "$ACTUAL" != "$EXPECTED" ]; then
-    echo "Checksum verification failed!"
-    echo "  Expected: $EXPECTED"
-    echo "  Got:      $ACTUAL"
-    exit 1
-  fi
-  echo "Checksum verified."
+EXPECTED=$(grep " ${ARCHIVE}\$" checksums.txt | awk '{print $1}')
+if [ -z "$EXPECTED" ]; then
+  echo "Error: no checksum entry for ${ARCHIVE} in checksums.txt — refusing to install."
+  exit 1
 fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL=$(sha256sum "${ARCHIVE}" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
+else
+  echo "Error: sha256sum or shasum is required to verify the download — refusing to install."
+  exit 1
+fi
+
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  echo "Checksum verification failed!"
+  echo "  Expected: $EXPECTED"
+  echo "  Got:      $ACTUAL"
+  exit 1
+fi
+echo "Checksum verified."
 
 # Extract
 tar -xzf "${ARCHIVE}"
