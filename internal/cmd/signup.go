@@ -40,6 +40,18 @@ func newSignupCmd() *cobra.Command {
 				return fmt.Errorf("signup failed: %w", err)
 			}
 
+			// Signup may put the account on a waitlist (no token issued) rather
+			// than logging in immediately. Don't claim "account created" or try
+			// to store an empty token in that case.
+			if resp.Token == "" {
+				if resp.Message != "" {
+					fmt.Println(resp.Message)
+				} else {
+					fmt.Println("Account created — pending approval.")
+				}
+				return nil
+			}
+
 			if err := auth.SaveToken(resp.Token); err != nil {
 				return fmt.Errorf("save token: %w", err)
 			}

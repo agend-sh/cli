@@ -25,7 +25,7 @@ func newLoginCmd() *cobra.Command {
 				if err := auth.SaveToken(token); err != nil {
 					return fmt.Errorf("failed to save token: %w", err)
 				}
-				fmt.Println("Authenticated successfully.")
+				printAuthed()
 				return nil
 			}
 
@@ -54,7 +54,7 @@ func newLoginCmd() *cobra.Command {
 					return fmt.Errorf("save token: %w", err)
 				}
 
-				fmt.Println("Authenticated successfully.")
+				printAuthed()
 				return nil
 			}
 
@@ -81,4 +81,17 @@ func newLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&email, "email", "", "login with email/password (set AGEND_PASSWORD for non-interactive use)")
 
 	return cmd
+}
+
+// printAuthed reports a successful login, naming the account it activated and
+// noting if other accounts are stored (so the multi-account model is visible).
+func printAuthed() {
+	if active := auth.ActiveEmail(); active != "" && active != "default" {
+		fmt.Printf("Authenticated as %s.\n", active)
+	} else {
+		fmt.Println("Authenticated successfully.")
+	}
+	if accts, err := auth.ListAccounts(); err == nil && len(accts) > 1 {
+		fmt.Printf("(%d accounts stored — use 'agend account switch <email>')\n", len(accts))
+	}
 }

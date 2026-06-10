@@ -85,8 +85,9 @@ type GitHubAuthRequest struct {
 }
 
 type AuthResponse struct {
-	UserID string `json:"user_id"`
-	Token  string `json:"token"`
+	UserID  string `json:"user_id"`
+	Token   string `json:"token"`
+	Message string `json:"message"` // e.g. signup waitlist notice (no token issued)
 }
 
 func (c *Client) Signup(email, password string) (*AuthResponse, error) {

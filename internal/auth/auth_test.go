@@ -63,6 +63,10 @@ func TestRemoveTokenDeletesFile(t *testing.T) {
 func TestSaveAndLoadEnvironment(t *testing.T) {
 	setupHome(t)
 
+	// Env state belongs to the active account, so log in first.
+	if err := SaveToken("tok_env"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
 	if err := SaveEnvironment("env-1", "host:443", "s3cret"); err != nil {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
@@ -121,6 +125,9 @@ func TestClearEnvironmentNoConfig(t *testing.T) {
 func TestSaveSessionTokenAppearsInLoadEnvironment(t *testing.T) {
 	setupHome(t)
 
+	if err := SaveToken("tok_sess"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
 	if err := SaveEnvironment("env-3", "ep3", "sec3"); err != nil {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}

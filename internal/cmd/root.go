@@ -52,6 +52,7 @@ func NewRoot(version string) *cobra.Command {
 
 	root.AddCommand(newSignupCmd())
 	root.AddCommand(newLoginCmd())
+	root.AddCommand(newAccountCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newLogoutCmd())

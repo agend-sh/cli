@@ -31,10 +31,22 @@ func newStatusCmd() *cobra.Command {
 			}
 
 			fmt.Println("Status: authenticated")
+			if active := auth.ActiveEmail(); active != "" && active != "default" {
+				fmt.Printf("Account: %s\n", active)
+			}
 			if len(token) >= 12 {
 				fmt.Printf("Token:  %s...%s\n", token[:8], token[len(token)-4:])
 			} else {
 				fmt.Printf("Token:  %s\n", token)
+			}
+			if accts, err := auth.ListAccounts(); err == nil && len(accts) > 1 {
+				others := make([]string, 0, len(accts)-1)
+				for _, a := range accts {
+					if !a.Active {
+						others = append(others, a.Email)
+					}
+				}
+				fmt.Printf("Other accounts: %v (switch with 'agend account switch')\n", others)
 			}
 
 			envID, endpoint, _, _, _ := auth.LoadEnvironment()

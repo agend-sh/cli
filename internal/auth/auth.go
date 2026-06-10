@@ -18,14 +18,30 @@ import (
 	"time"
 )
 
-type config struct {
+// account holds one logged-in account's credentials and its active
+// environment. Each account is independent, so operating on one never
+// disturbs another.
+type account struct {
+	Email        string `json:"email,omitempty"`
 	Token        string `json:"token"`
 	EnvID        string `json:"env_id,omitempty"`
 	Endpoint     string `json:"endpoint,omitempty"`
 	Secret       string `json:"secret,omitempty"`
 	SessionToken string `json:"session_token,omitempty"`
-	APIURL       string `json:"api_url,omitempty"`
 }
+
+// store is the on-disk credentials file (v2): multiple accounts keyed by email
+// plus a pointer to the active one, so `agend login` adds-not-clobbers and you
+// can switch accounts without losing sessions. The v1 single-account flat
+// format is migrated transparently on first load.
+type store struct {
+	Version  int                 `json:"version"`
+	Active   string              `json:"active,omitempty"`
+	Accounts map[string]*account `json:"accounts,omitempty"`
+	APIURL   string              `json:"api_url,omitempty"`
+}
+
+const storeVersion = 2
 
 func configPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -35,36 +51,77 @@ func configPath() (string, error) {
 	return filepath.Join(home, ".config", "agend", "credentials.json"), nil
 }
 
-func loadConfig() (*config, error) {
+// accountKey derives the map key for a token: its JWT email claim, or
+// "default" for an opaque/unparseable token (so migration still works).
+func accountKey(token string) string {
+	if email, ok := TokenEmail(token); ok {
+		return email
+	}
+	return "default"
+}
+
+// loadStore reads the credentials file, migrating the v1 flat format if found.
+// A missing file yields an empty store (not an error).
+func loadStore() (*store, error) {
 	path, err := configPath()
 	if err != nil {
 		return nil, err
 	}
-
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return &store{Version: storeVersion, Accounts: map[string]*account{}}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	var cfg config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var s store
+	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	if s.Accounts != nil {
+		return &s, nil // already v2
+	}
 
-	return &cfg, nil
+	// v1 (flat single-account) → migrate into the v2 store.
+	var legacy struct {
+		Token        string `json:"token"`
+		EnvID        string `json:"env_id"`
+		Endpoint     string `json:"endpoint"`
+		Secret       string `json:"secret"`
+		SessionToken string `json:"session_token"`
+		APIURL       string `json:"api_url"`
+	}
+	_ = json.Unmarshal(data, &legacy)
+	migrated := &store{Version: storeVersion, Accounts: map[string]*account{}, APIURL: legacy.APIURL}
+	if legacy.Token != "" {
+		key := accountKey(legacy.Token)
+		migrated.Accounts[key] = &account{
+			Email:        key,
+			Token:        legacy.Token,
+			EnvID:        legacy.EnvID,
+			Endpoint:     legacy.Endpoint,
+			Secret:       legacy.Secret,
+			SessionToken: legacy.SessionToken,
+		}
+		migrated.Active = key
+	}
+	return migrated, nil
 }
 
-func saveConfig(cfg *config) error {
+func saveStore(s *store) error {
+	s.Version = storeVersion
+	if s.Accounts == nil {
+		s.Accounts = map[string]*account{}
+	}
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
-
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -88,41 +145,95 @@ func saveConfig(cfg *config) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-
 	return os.Rename(tmp.Name(), path)
 }
 
-func SaveToken(token string) error {
-	cfg, _ := loadConfig()
-	if cfg == nil {
-		cfg = &config{}
+// activeAccount returns the currently-active account, or nil if none.
+func activeAccount(s *store) *account {
+	if s.Active == "" {
+		return nil
 	}
-	cfg.Token = token
-	return saveConfig(cfg)
+	return s.Accounts[s.Active]
+}
+
+// mutateActive applies fn to the active account and persists. No-op if there
+// is no active account.
+func mutateActive(fn func(*account)) error {
+	s, err := loadStore()
+	if err != nil {
+		return err
+	}
+	a := activeAccount(s)
+	if a == nil {
+		return nil
+	}
+	fn(a)
+	return saveStore(s)
+}
+
+// SaveToken records a freshly-obtained token under its account (keyed by the
+// JWT email claim) and makes that account active — without discarding any
+// other account or this account's own existing environment. This is what makes
+// `agend login` add-not-clobber, so switching accounts never inherits another
+// account's environment.
+func SaveToken(token string) error {
+	if token == "" {
+		return errors.New("empty token")
+	}
+	s, err := loadStore()
+	if err != nil {
+		s = &store{Version: storeVersion, Accounts: map[string]*account{}}
+	}
+	if s.Accounts == nil {
+		s.Accounts = map[string]*account{}
+	}
+	key := accountKey(token)
+	a := s.Accounts[key]
+	if a == nil {
+		a = &account{Email: key}
+		s.Accounts[key] = a
+	}
+	a.Token = token
+	a.Email = key
+	s.Active = key
+	return saveStore(s)
 }
 
 func LoadToken() (string, error) {
-	cfg, err := loadConfig()
+	s, err := loadStore()
 	if err != nil {
 		return "", err
 	}
-
-	if cfg.Token == "" {
+	a := activeAccount(s)
+	if a == nil || a.Token == "" {
 		return "", errors.New("no token found")
 	}
-
-	return cfg.Token, nil
+	return a.Token, nil
 }
 
+// RemoveToken logs out the active account: it is removed and, if other accounts
+// remain, one becomes active. The file is deleted only when no accounts remain.
 func RemoveToken() error {
-	path, err := configPath()
+	s, err := loadStore()
 	if err != nil {
-		return err
+		return nil
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	if s.Active != "" {
+		delete(s.Accounts, s.Active)
+		s.Active = ""
+		for k := range s.Accounts {
+			s.Active = k
+			break
+		}
 	}
-	return nil
+	if len(s.Accounts) == 0 {
+		path, perr := configPath()
+		if perr == nil {
+			_ = os.Remove(path)
+		}
+		return nil
+	}
+	return saveStore(s)
 }
 
 // TokenExpiry parses the `exp` claim of a JWT and returns it as a Unix
@@ -159,81 +270,93 @@ func TokenExpired(token string) bool {
 	return time.Now().Unix() >= exp
 }
 
-// SaveEnvironment stores the active environment info.
-func SaveEnvironment(envID, endpoint, secret string) error {
-	cfg, _ := loadConfig()
-	if cfg == nil {
-		cfg = &config{}
+// TokenEmail parses the `email` claim of a JWT. ok is false if the token isn't
+// a parseable JWT with an email claim. Used to key accounts by email.
+func TokenEmail(token string) (string, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", false
 	}
-	cfg.EnvID = envID
-	cfg.Endpoint = endpoint
-	cfg.Secret = secret
-	return saveConfig(cfg)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", false
+	}
+	var claims struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Email == "" {
+		return "", false
+	}
+	return claims.Email, true
 }
 
-// LoadEnvironment returns the active environment ID, endpoint, VM secret, and session token.
+// SaveEnvironment stores the active account's active environment.
+func SaveEnvironment(envID, endpoint, secret string) error {
+	return mutateActive(func(a *account) {
+		a.EnvID = envID
+		a.Endpoint = endpoint
+		a.Secret = secret
+	})
+}
+
+// LoadEnvironment returns the active account's environment ID, endpoint, VM
+// secret, and session token.
 func LoadEnvironment() (envID, endpoint, secret, sessionToken string, err error) {
-	cfg, err := loadConfig()
+	s, err := loadStore()
 	if err != nil {
 		return "", "", "", "", err
 	}
-	return cfg.EnvID, cfg.Endpoint, cfg.Secret, cfg.SessionToken, nil
+	a := activeAccount(s)
+	if a == nil {
+		return "", "", "", "", nil
+	}
+	return a.EnvID, a.Endpoint, a.Secret, a.SessionToken, nil
 }
 
 // SaveSessionToken persists the gRPC session token for reuse across CLI invocations.
 // Clears the one-time secret since it was consumed to obtain this token.
 func SaveSessionToken(token string) error {
-	cfg, _ := loadConfig()
-	if cfg == nil {
-		cfg = &config{}
-	}
-	cfg.SessionToken = token
-	cfg.Secret = "" // consumed — never valid again
-	return saveConfig(cfg)
+	return mutateActive(func(a *account) {
+		a.SessionToken = token
+		a.Secret = "" // consumed — never valid again
+	})
 }
 
 // ClearSessionToken drops a stored gRPC session token without touching
 // the rest of the environment record. Used by the retry path when reauth
 // rotates the one-time secret — the old session token is no longer valid.
 func ClearSessionToken() error {
-	cfg, err := loadConfig()
-	if err != nil || cfg == nil {
-		return nil
-	}
-	cfg.SessionToken = ""
-	return saveConfig(cfg)
+	return mutateActive(func(a *account) { a.SessionToken = "" })
 }
 
-// ClearEnvironment removes stored environment info.
+// ClearEnvironment removes the active account's environment info.
 func ClearEnvironment() error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil // nothing to clear
-	}
-	cfg.EnvID = ""
-	cfg.Endpoint = ""
-	cfg.Secret = ""
-	cfg.SessionToken = ""
-	return saveConfig(cfg)
+	return mutateActive(func(a *account) {
+		a.EnvID = ""
+		a.Endpoint = ""
+		a.Secret = ""
+		a.SessionToken = ""
+	})
 }
 
-// SaveAPIURL stores a custom API base URL (for dev/testing).
+// SaveAPIURL stores a custom API base URL (for dev/testing). It is global
+// (not per-account).
 func SaveAPIURL(url string) error {
-	cfg, _ := loadConfig()
-	if cfg == nil {
-		cfg = &config{}
+	s, err := loadStore()
+	if err != nil {
+		s = &store{Version: storeVersion, Accounts: map[string]*account{}}
 	}
-	cfg.APIURL = url
-	return saveConfig(cfg)
+	s.APIURL = url
+	return saveStore(s)
 }
 
 // LoadAPIURL returns the stored API URL or empty string for default.
 func LoadAPIURL() string {
-	cfg, _ := loadConfig()
-	if cfg == nil {
+	s, err := loadStore()
+	if err != nil {
 		return ""
 	}
-	return cfg.APIURL
+	return s.APIURL
 }
 
 // BrowserLogin starts a local HTTP server, opens the browser for OAuth,
