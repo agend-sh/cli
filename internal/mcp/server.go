@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,20 +50,29 @@ type Server struct {
 	version string
 	scanner *bufio.Scanner
 	writer  io.Writer
-	mu      sync.Mutex
+	mu      sync.Mutex // guards writer
+
+	inflightMu sync.Mutex
+	inflight   map[string]context.CancelFunc // in-flight tools/call by request id
 }
 
 func NewServer(apiClient *api.Client, version string) *Server {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	return &Server{
-		pool:    NewConnPool(apiClient),
-		api:     apiClient,
-		version: version,
-		scanner: scanner,
-		writer:  os.Stdout,
+		pool:     NewConnPool(apiClient),
+		api:      apiClient,
+		version:  version,
+		scanner:  scanner,
+		writer:   os.Stdout,
+		inflight: make(map[string]context.CancelFunc),
 	}
 }
+
+// maxCallDuration is a generous backstop so a wedged tool call can't leak a
+// goroutine forever. Interactive execs have their own (shorter) daemon-side
+// timeout; this only catches a truly stuck connection.
+const maxCallDuration = 10 * time.Minute
 
 func (s *Server) Run(ctx context.Context) error {
 	defer s.pool.CloseAll()
@@ -79,16 +89,56 @@ func (s *Server) Run(ctx context.Context) error {
 			continue
 		}
 
-		s.handleRequest(ctx, &req)
+		// Dispatch tool calls concurrently so one slow shell_exec doesn't
+		// freeze the whole interface — shell_interrupt / notifications/cancelled
+		// must be able to run while a command is in flight. The writer is
+		// mutex-guarded, so concurrent responses are safe. Lightweight methods
+		// (initialize, tools/list, notifications) run inline to keep the
+		// handshake ordered.
+		if req.Method == "tools/call" {
+			r := req // copy for the goroutine
+			go s.dispatchCall(ctx, &r)
+		} else {
+			s.handleRequest(ctx, &req)
+		}
 	}
 	return s.scanner.Err()
+}
+
+// dispatchCall runs a tools/call on its own cancelable, time-bounded context,
+// registered by request id so notifications/cancelled can stop it.
+func (s *Server) dispatchCall(ctx context.Context, req *jsonrpcRequest) {
+	callCtx, cancel := context.WithTimeout(ctx, maxCallDuration)
+	defer cancel()
+
+	id := string(req.ID)
+	if id != "" && id != "null" {
+		s.inflightMu.Lock()
+		s.inflight[id] = cancel
+		s.inflightMu.Unlock()
+		defer func() {
+			s.inflightMu.Lock()
+			delete(s.inflight, id)
+			s.inflightMu.Unlock()
+		}()
+	}
+	s.handleRequest(callCtx, req)
 }
 
 func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 	switch req.Method {
 	case "initialize":
+		// Echo the client's requested protocol version when it sends one
+		// (negotiation), falling back to a version we support.
+		protocolVersion := "2024-11-05"
+		var initParams struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		if json.Unmarshal(req.Params, &initParams) == nil && initParams.ProtocolVersion != "" {
+			protocolVersion = initParams.ProtocolVersion
+		}
 		s.sendResult(req.ID, map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 			},
@@ -100,6 +150,20 @@ func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 
 	case "notifications/initialized":
 		// no response
+
+	case "notifications/cancelled":
+		// Client asked to cancel an in-flight request — cancel its context so
+		// the underlying gRPC call unwinds. No response (it's a notification).
+		var p struct {
+			RequestID json.RawMessage `json:"requestId"`
+		}
+		if json.Unmarshal(req.Params, &p) == nil && len(p.RequestID) > 0 {
+			s.inflightMu.Lock()
+			if cancel, ok := s.inflight[string(p.RequestID)]; ok {
+				cancel()
+			}
+			s.inflightMu.Unlock()
+		}
 
 	case "tools/list":
 		s.sendResult(req.ID, map[string]any{
@@ -741,6 +805,14 @@ func numArg(v any) float64 {
 		return n
 	case json.Number:
 		f, _ := n.Float64()
+		return f
+	case string:
+		// LLMs frequently pass numeric args as strings (e.g. port "8080").
+		// Parse them instead of silently coercing to 0.
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		if err != nil {
+			return 0
+		}
 		return f
 	default:
 		return 0

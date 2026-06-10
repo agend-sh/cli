@@ -71,6 +71,14 @@ func Dial(ctx context.Context, addr, secret, sessionToken string) (*Client, erro
 
 	opts = append(opts, grpc.WithBlock())
 	opts = append(opts, grpc.WithUnaryInterceptor(c.authInterceptor()))
+	// Match the daemon's 16MB limits so 10MB chunked transfers aren't rejected
+	// by gRPC's 4MB default on either the request (FilePutChunked) or the
+	// response (FileGetChunked).
+	const maxMsgSize = 16 << 20
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(maxMsgSize),
+		grpc.MaxCallSendMsgSize(maxMsgSize),
+	))
 
 	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
