@@ -21,7 +21,7 @@ func newInputCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			var resp *pb.InputResponse
-			err := callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.Input(ctx, &pb.InputRequest{
 					Input: args[0],
 				})
@@ -65,7 +65,7 @@ func newInterruptCmd() *cobra.Command {
 		Short: "Send SIGINT to the active session",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			return callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Interrupt(ctx, &pb.InterruptRequest{})
 				if err != nil {
 					return fmt.Errorf("interrupt failed: %w", err)

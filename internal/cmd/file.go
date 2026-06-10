@@ -22,7 +22,7 @@ func newFileGetCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			var resp *pb.FileGetResponse
-			err := callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.FileGet(ctx, &pb.FileGetRequest{
 					Path:     args[0],
 					Encoding: encoding,
@@ -62,7 +62,7 @@ func newFilePutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			var resp *pb.FilePutResponse
-			err := callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.FilePut(ctx, &pb.FilePutRequest{
 					Path:       args[0],
 					Content:    args[1],
@@ -103,7 +103,7 @@ func newFileMoveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			return callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				if _, err := client.Agent.FileMove(ctx, &pb.FileMoveRequest{
 					Source:      args[0],
 					Destination: args[1],

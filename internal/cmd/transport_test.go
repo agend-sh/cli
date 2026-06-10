@@ -1,6 +1,9 @@
 package cmd
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestClassifyErr(t *testing.T) {
 	tests := []struct {
@@ -49,7 +52,7 @@ func TestClassifyErr(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyErr(tc.msg); got != tc.want {
+			if got := classifyErr(errors.New(tc.msg)); got != tc.want {
 				t.Errorf("classifyErr(%q) = %v, want %v", tc.msg, got, tc.want)
 			}
 		})

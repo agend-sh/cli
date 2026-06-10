@@ -27,7 +27,7 @@ func newExecCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			var resp *pb.ExecResponse
-			err := callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.Exec(ctx, &pb.ExecRequest{
 					Command:         strings.Join(args, " "),
 					TimeoutMs:       timeoutMs,

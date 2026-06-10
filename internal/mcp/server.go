@@ -18,6 +18,7 @@ import (
 	"github.com/agend-sh/cli/internal/api"
 	"github.com/agend-sh/cli/internal/auth"
 	agentgrpc "github.com/agend-sh/cli/internal/grpc"
+	"github.com/agend-sh/cli/internal/recovery"
 	pb "github.com/agend-sh/cli/proto/agentd/v1"
 )
 
@@ -189,7 +190,7 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 
 	conn := s.pool.Get(envID)
 
-	return conn.Execute(ctx, func(client *agentgrpc.Client) (string, bool) {
+	return conn.Execute(ctx, recovery.IsIdempotent(name), func(client *agentgrpc.Client) (string, bool) {
 		return dispatchTool(ctx, client, name, args)
 	})
 }

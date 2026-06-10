@@ -107,7 +107,13 @@ func (c *EnvConn) EnsureConnected(ctx context.Context) error {
 }
 
 // Execute runs a tool call with automatic retry and reconnect on failure.
-func (c *EnvConn) Execute(ctx context.Context, fn func(*agentgrpc.Client) (string, bool)) (string, bool) {
+//
+// idempotent says whether fn is safe to transparently re-execute. A
+// side-effecting op (shell_exec, file_upload, port_expose, …) that fails
+// mid-call may already have run on the daemon, so we must NOT re-run it — we
+// reconnect so the *next* call is healthy and surface the original error. Only
+// read-only ops are retried in place.
+func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgrpc.Client) (string, bool)) (string, bool) {
 	if err := c.EnsureConnected(ctx); err != nil {
 		return fmt.Sprintf("connection failed: %v", err), true
 	}
@@ -123,6 +129,18 @@ func (c *EnvConn) Execute(ctx context.Context, fn func(*agentgrpc.Client) (strin
 
 	// Classify the error and decide what to do
 	cat := classifyError(text)
+
+	// For a non-idempotent op that already reached the daemon, don't re-run it.
+	// Auth errors are the exception: an Unauthenticated reply proves the call
+	// was rejected before executing, so reauth + one retry is safe.
+	if !idempotent && cat != ErrFatal && cat != ErrAuth {
+		log.Printf("[env:%s] non-idempotent op failed (%v); reconnecting for next call, not retrying", c.envID, cat)
+		c.mu.Lock()
+		c.close()
+		_ = c.resolveAndConnect(ctx)
+		c.mu.Unlock()
+		return text, true
+	}
 
 	switch cat {
 	case ErrFatal:

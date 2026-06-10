@@ -5,99 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/agend-sh/cli/internal/auth"
 	agentgrpc "github.com/agend-sh/cli/internal/grpc"
+	"github.com/agend-sh/cli/internal/recovery"
 )
 
-// errorCategory mirrors the MCP classifier so direct CLI subcommands get
-// the same auto-recovery behaviour the MCP bridge has always had.
-type errorCategory int
+// errorCategory and classifyErr delegate to internal/recovery — the single
+// classifier shared with the MCP bridge. classifyErr takes the error so it can
+// classify on the gRPC status code when present, falling back to the message.
+type errorCategory = recovery.Category
 
 const (
-	errTransient errorCategory = iota
-	errStaleEndpoint
-	errAuth
-	errFatal
+	errTransient     = recovery.Transient
+	errStaleEndpoint = recovery.StaleEndpoint
+	errAuth          = recovery.Auth
+	errFatal         = recovery.Fatal
 )
 
-func classifyErr(msg string) errorCategory {
-	t := strings.ToLower(msg)
-
-	// Client-side cancellation — don't retry.
-	if strings.Contains(t, "context canceled") || strings.Contains(t, "context deadline exceeded") {
-		return errFatal
-	}
-	// Fatal gRPC statuses.
-	if strings.Contains(t, "not found") && strings.Contains(t, "404") {
-		return errFatal
-	}
-	if strings.Contains(t, "forbidden") || strings.Contains(t, "403") {
-		return errFatal
-	}
-	// Port_expose misconfiguration — retries will never fix these. Return
-	// immediately so the caller sees a clean, actionable error.
-	if strings.Contains(t, "does not belong to cloudflare zone") {
-		return errFatal
-	}
-	if strings.Contains(t, "already bound: cname points to") {
-		return errFatal
-	}
-	// Auth — reauth flow needed.
-	if strings.Contains(t, "unauthenticated") {
-		return errAuth
-	}
-	if strings.Contains(t, "invalid session token") {
-		return errAuth
-	}
-	if strings.Contains(t, "401") && !strings.Contains(t, "websocket") {
-		return errAuth
-	}
-	// Stale endpoint — re-resolve via control plane.
-	if strings.Contains(t, "status code 530") {
-		return errStaleEndpoint
-	}
-	if strings.Contains(t, "no such host") {
-		return errStaleEndpoint
-	}
-	if strings.Contains(t, "connection refused") {
-		return errStaleEndpoint
-	}
-	if strings.Contains(t, "tunnel connection") && strings.Contains(t, "failed") {
-		return errStaleEndpoint
-	}
-	if strings.Contains(t, "may be stopped or expired") {
-		return errStaleEndpoint
-	}
-	if strings.Contains(t, "environment unreachable") {
-		return errStaleEndpoint
-	}
-	// Transient — same endpoint, wait and retry.
-	if strings.Contains(t, "unavailable") {
-		return errTransient
-	}
-	if strings.Contains(t, "status code 502") || strings.Contains(t, "status code 503") {
-		return errTransient
-	}
-	if strings.Contains(t, "i/o timeout") {
-		return errTransient
-	}
-	if strings.Contains(t, "connection reset") {
-		return errTransient
-	}
-	if strings.Contains(t, "deadline exceeded") {
-		return errTransient
-	}
-	if strings.Contains(t, "unreachable") {
-		return errTransient
-	}
-	// Default: assume stale — the safest recovery, since fatal cases are
-	// explicitly listed above.
-	return errStaleEndpoint
+func classifyErr(err error) errorCategory {
+	return recovery.Classify(err)
 }
 
 // callWithRetry runs fn against a freshly-dialed agentd client, with
@@ -112,7 +42,10 @@ func classifyErr(msg string) errorCategory {
 //
 // Fresh credentials obtained during recovery are persisted to disk so
 // subsequent CLI invocations start from a good state.
-func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, fn func(*agentgrpc.Client) error) error {
+// idempotent reports whether fn is safe to re-execute after it may already
+// have run on the daemon. Dial failures (fn never ran) are always retried
+// regardless; only the post-call error path consults this.
+func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempotent bool, fn func(*agentgrpc.Client) error) error {
 	// Direct-address mode: no retry, no creds persistence.
 	if cmd.Flags().Changed("addr") {
 		client, err := dialDaemon(ctx, cmd, addr)
@@ -139,7 +72,7 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, fn func
 			// A dial failure before any RPC is almost always a stale
 			// endpoint or a transient connection problem.
 			lastErr = err
-			cat := classifyErr(err.Error())
+			cat := classifyErr(err)
 			if cat == errFatal {
 				return err
 			}
@@ -161,7 +94,20 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, fn func
 		}
 
 		lastErr = err
-		cat := classifyErr(err.Error())
+		cat := classifyErr(err)
+
+		// A non-idempotent op that reached the daemon may already have run;
+		// don't loop back and re-execute it. Auth is the exception (an
+		// Unauthenticated reply means it was rejected before running).
+		if !idempotent && cat != errFatal && cat != errAuth {
+			// Refresh the endpoint so the *next* CLI invocation is healthy,
+			// then surface the original error.
+			if rerr := refreshEndpoint(); rerr != nil {
+				log.Printf("refresh endpoint failed: %v", rerr)
+			}
+			return err
+		}
+
 		switch cat {
 		case errFatal:
 			return err

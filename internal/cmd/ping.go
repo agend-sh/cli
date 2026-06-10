@@ -18,7 +18,7 @@ func newPingCmd() *cobra.Command {
 		Short: "Ping the agentd daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			return callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Ping(ctx, &pb.PingRequest{})
 				if err != nil {
 					return fmt.Errorf("ping failed: %w", err)

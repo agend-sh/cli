@@ -21,7 +21,7 @@ func newTaskOutputCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			var resp *pb.TaskOutputResponse
-			err := callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.TaskOutput(ctx, &pb.TaskOutputRequest{
 					TaskId: args[0],
 				})
@@ -63,7 +63,7 @@ func newTaskStopCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			return callWithRetry(ctx, cmd, addr, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				if _, err := client.Agent.TaskStop(ctx, &pb.TaskStopRequest{
 					TaskId: args[0],
 				}); err != nil {
