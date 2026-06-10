@@ -313,7 +313,11 @@ func (s *Server) envCreate() (string, bool) {
 		conn.SetSecret(resp.Secret)
 	}
 	auth.SaveEnvironment(resp.EnvID, resp.Endpoint, resp.Secret)
-	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s", resp.EnvID, resp.State, resp.Endpoint), false
+	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s\n"+
+		"note: a freshly-created tunnel can take up to ~60s to start routing. "+
+		"The first shell_exec may need a few seconds — the connection auto-retries; "+
+		"if it reports unreachable, wait a moment and try again.",
+		resp.EnvID, resp.State, resp.Endpoint), false
 }
 
 func (s *Server) envStatus(envRef string) (string, bool) {

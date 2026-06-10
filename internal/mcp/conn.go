@@ -209,13 +209,20 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 			return fmt.Sprintf("reconnect failed: %v (original: %s)", err, text), true
 		}
 
-		// Wait for tunnel DNS propagation, then retry with backoff
+		// Retry with backoff while the tunnel warms up. A freshly-created
+		// Cloudflare quick tunnel can take up to ~60s to start routing, so the
+		// total window here covers that (capped per-attempt wait keeps the
+		// cadence sane): 3+6+9+10+10+10+10 ≈ 58s across 7 attempts.
 		c.mu.Lock()
 		client = c.client
 		c.mu.Unlock()
-		for attempt := 1; attempt <= 4; attempt++ {
+		const maxAttempts = 7
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			wait := time.Duration(attempt*3) * time.Second
-			log.Printf("[env:%s] waiting %s for tunnel (attempt %d/4)...", c.envID, wait, attempt)
+			if wait > 10*time.Second {
+				wait = 10 * time.Second
+			}
+			log.Printf("[env:%s] waiting %s for tunnel (attempt %d/%d)...", c.envID, wait, attempt, maxAttempts)
 			time.Sleep(wait)
 			retryText, retryErr := fn(client)
 			if !retryErr {
@@ -223,7 +230,7 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 			}
 			log.Printf("[env:%s] attempt %d: %s", c.envID, attempt, retryText[:min(len(retryText), 80)])
 		}
-		return "environment unreachable after reconnect — the tunnel may still be starting. Try again in a few seconds.", true
+		return "environment unreachable after reconnect — the tunnel may still be starting (fresh tunnels can take ~60s). Try again in a few seconds.", true
 	}
 
 	return text, true

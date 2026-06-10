@@ -1,13 +1,44 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/agend-sh/cli/internal/api"
 	"github.com/agend-sh/cli/internal/auth"
+	agentgrpc "github.com/agend-sh/cli/internal/grpc"
+	pb "github.com/agend-sh/cli/proto/agentd/v1"
 	"github.com/spf13/cobra"
 )
+
+// waitTunnelReachable probes the endpoint until a real request routes through
+// the Cloudflare tunnel, or the deadline passes. A freshly-created quick tunnel
+// reports its URL well before the edge actually routes to it (cloudflared even
+// says "it may take some time to be reachable"), so "endpoint is set" is not
+// "endpoint works". We probe with an unauthenticated Ping — the daemon always
+// allows Ping, so this confirms routing without consuming the one-time secret.
+// Returns true once reachable. progress is called between attempts for UX.
+func waitTunnelReachable(endpoint string, timeout time.Duration, progress func()) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		client, err := agentgrpc.Dial(ctx, endpoint, "", "")
+		if err == nil {
+			_, perr := client.Agent.Ping(ctx, &pb.PingRequest{})
+			client.Close()
+			cancel()
+			if perr == nil {
+				return true
+			}
+		} else {
+			cancel()
+		}
+		progress()
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
 
 func apiClient() (*api.Client, error) {
 	token, err := auth.LoadToken()
@@ -114,6 +145,20 @@ func newEnvCreateCmd() *cobra.Command {
 			// Update stored endpoint with the real tunnel URL
 			if err := auth.SaveEnvironment(resp.EnvID, endpoint, resp.Secret); err != nil {
 				return fmt.Errorf("save environment: %w", err)
+			}
+
+			// The endpoint exists, but a fresh Cloudflare quick tunnel can take
+			// up to a minute to actually start routing. Probe until it's
+			// reachable so we don't tell the user "ready" before it works.
+			fmt.Print("Waiting for tunnel to come online (this can take up to a minute)...")
+			reachable := waitTunnelReachable(endpoint, 75*time.Second, func() { fmt.Print(".") })
+			fmt.Println()
+
+			if !reachable {
+				fmt.Printf("Environment %s created — the tunnel is still warming up.\n", resp.EnvID)
+				fmt.Printf("  Endpoint: %s\n", endpoint)
+				fmt.Println("Give it a few more seconds, then run 'agend exec' or 'agend ping'.")
+				return nil
 			}
 
 			fmt.Printf("Environment ready!\n")
