@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/agend-sh/cli/internal/auth"
 	"github.com/spf13/cobra"
@@ -16,6 +17,16 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				fmt.Println("Status: not authenticated")
 				fmt.Println("Run 'agend login' to get started.")
+				return nil
+			}
+
+			// An existing token file isn't proof of a usable session — the JWT
+			// may have expired. Check the exp claim locally so we don't claim
+			// "authenticated" while every API call 401s.
+			if auth.TokenExpired(token) {
+				exp, _ := auth.TokenExpiry(token)
+				fmt.Printf("Status: session expired (%s)\n", time.Unix(exp, 0).Format("2006-01-02 15:04 MST"))
+				fmt.Println("Run 'agend login' to re-authenticate.")
 				return nil
 			}
 

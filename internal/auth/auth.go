@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 )
 
 type config struct {
@@ -120,6 +123,40 @@ func RemoveToken() error {
 		return err
 	}
 	return nil
+}
+
+// TokenExpiry parses the `exp` claim of a JWT and returns it as a Unix
+// timestamp (seconds). ok is false if the token isn't a parseable JWT with an
+// exp claim — callers treat that as "can't tell locally, let the server
+// decide" rather than forcing a re-login on an opaque token.
+func TokenExpiry(token string) (exp int64, ok bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == 0 {
+		return 0, false
+	}
+	return claims.Exp, true
+}
+
+// TokenExpired reports whether the stored session token is a JWT whose exp has
+// passed. A non-JWT or claimless token returns false (unknown → defer to the
+// server). Used to fail fast with a clear "session expired" message instead of
+// 401-looping or hanging on a stale endpoint.
+func TokenExpired(token string) bool {
+	exp, ok := TokenExpiry(token)
+	if !ok {
+		return false
+	}
+	return time.Now().Unix() >= exp
 }
 
 // SaveEnvironment stores the active environment info.

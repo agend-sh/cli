@@ -56,6 +56,14 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 		return fn(client)
 	}
 
+	// Recovery (endpoint refresh / reauth) needs a valid control-plane token.
+	// If the stored JWT has already expired, those steps can only 401, so
+	// retrying just hangs for tens of seconds. Recognise it and fail fast with
+	// an actionable message. (The happy path — fresh endpoint + valid session
+	// token — never reaches recovery, so a valid session isn't blocked.)
+	storedToken, _ := auth.LoadToken()
+	errSessionExpired := errors.New("session expired — run 'agend login' to re-authenticate")
+
 	// Bounded retry budgets per category. The outer loop bounds total
 	// attempts so a persistently-failing env doesn't hang forever.
 	var (
@@ -75,6 +83,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			cat := classifyErr(err)
 			if cat == errFatal {
 				return err
+			}
+			if auth.TokenExpired(storedToken) {
+				return errSessionExpired // recovery can't succeed; don't loop
 			}
 			if staleBudget == 0 && transientBudget == 0 {
 				return err
@@ -113,6 +124,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			return err
 
 		case errAuth:
+			if auth.TokenExpired(storedToken) {
+				return errSessionExpired
+			}
 			if authBudget == 0 {
 				return err
 			}
@@ -126,6 +140,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			// Don't sleep on reauth — the new creds are usable immediately.
 
 		case errStaleEndpoint:
+			if auth.TokenExpired(storedToken) {
+				return errSessionExpired
+			}
 			if staleBudget == 0 {
 				return err
 			}
