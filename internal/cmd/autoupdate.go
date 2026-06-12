@@ -36,6 +36,15 @@ func MaybeAutoUpdate(currentVersion string, args []string) {
 	// Auto-update must never break the CLI — swallow anything unexpected.
 	defer func() { _ = recover() }()
 
+	// We just re-exec'd into a freshly-installed binary (the guard env is set
+	// only on the immediate child of the re-exec). Confirm once — syscall.Exec
+	// never returns, so this is the only place the success line can print — then
+	// fall through to the normal run without re-checking.
+	if os.Getenv("AGEND_SELF_UPDATED") == "1" {
+		fmt.Fprintf(os.Stderr, "agend: ✓ updated to %s\n", displayVersion(currentVersion))
+		return
+	}
+
 	if !autoUpdateEnabled(currentVersion, args) {
 		return
 	}
