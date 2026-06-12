@@ -66,6 +66,7 @@ func NewRoot(version string) *cobra.Command {
 	root.AddCommand(newInputCmd())
 	root.AddCommand(newInterruptCmd())
 	root.AddCommand(newEnvCmd())
+	root.AddCommand(newTeamCmd())
 	root.AddCommand(newDomainCmd())
 	root.AddCommand(newMCPCmd(version))
 	root.AddCommand(newVersionCmd(version))

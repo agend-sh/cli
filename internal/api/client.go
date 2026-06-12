@@ -274,3 +274,107 @@ func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
 
 	return &result, nil
 }
+
+// ---- Teams & shared environments (ADR-020) ----
+
+type Team struct {
+	TeamID  string `json:"team_id"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Status  string `json:"status"`
+	IsOwner bool   `json:"is_owner"`
+	EnvCap  int    `json:"env_cap"`
+}
+
+type CreateTeamResponse struct {
+	TeamID string `json:"team_id"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+}
+
+type ListTeamsResponse struct {
+	Teams []Team `json:"teams"`
+}
+
+type TeamMember struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+	Status string `json:"status"`
+}
+
+type ListMembersResponse struct {
+	TeamID  string       `json:"team_id"`
+	Members []TeamMember `json:"members"`
+}
+
+type TeamEnv struct {
+	EnvID         string `json:"env_id"`
+	State         string `json:"state"`
+	Endpoint      string `json:"endpoint"`
+	Alias         string `json:"alias"`
+	LeasedByEmail string `json:"leased_by_email"`
+	LeaseExpiry   string `json:"lease_expiry"`
+}
+
+type ListTeamEnvsResponse struct {
+	TeamID       string    `json:"team_id"`
+	Environments []TeamEnv `json:"environments"`
+}
+
+type messageResponse struct {
+	Status string `json:"status"`
+}
+
+func (c *Client) CreateTeam(name string) (*CreateTeamResponse, error) {
+	return doJSON[CreateTeamResponse](c, "POST", "/teams", map[string]string{"name": name})
+}
+
+func (c *Client) ListTeams() (*ListTeamsResponse, error) {
+	return doJSON[ListTeamsResponse](c, "GET", "/teams", nil)
+}
+
+func (c *Client) InviteMember(teamID, email string) error {
+	_, err := doJSON[messageResponse](c, "POST", "/teams/"+teamID+"/invite", map[string]string{"email": email})
+	return err
+}
+
+func (c *Client) AcceptInvite(teamID string) error {
+	_, err := doJSON[messageResponse](c, "POST", "/teams/"+teamID+"/accept", nil)
+	return err
+}
+
+func (c *Client) ListMembers(teamID string) (*ListMembersResponse, error) {
+	return doJSON[ListMembersResponse](c, "GET", "/teams/"+teamID+"/members", nil)
+}
+
+func (c *Client) ListTeamEnvironments(teamID string) (*ListTeamEnvsResponse, error) {
+	return doJSON[ListTeamEnvsResponse](c, "GET", "/teams/"+teamID+"/environments", nil)
+}
+
+func (c *Client) CreateTeamEnvironment(teamID string) (*CreateEnvResponse, error) {
+	return doJSON[CreateEnvResponse](c, "POST", "/environments", map[string]string{"team_id": teamID})
+}
+
+// AcquireResponse is the result of leasing a team env: a fresh one-time secret
+// to authenticate with, the endpoint, and when the lease expires.
+type AcquireResponse struct {
+	EnvID       string `json:"env_id"`
+	Secret      string `json:"secret"`
+	Endpoint    string `json:"endpoint"`
+	LeaseExpiry string `json:"lease_expiry"`
+}
+
+func (c *Client) AcquireEnvironment(envID string) (*AcquireResponse, error) {
+	return doJSON[AcquireResponse](c, "POST", "/environments/"+envID+"/acquire", nil)
+}
+
+func (c *Client) ReleaseEnvironment(envID string) error {
+	_, err := doJSON[messageResponse](c, "POST", "/environments/"+envID+"/release", nil)
+	return err
+}
+
+func (c *Client) HeartbeatEnvironment(envID string) error {
+	_, err := doJSON[messageResponse](c, "POST", "/environments/"+envID+"/heartbeat", nil)
+	return err
+}

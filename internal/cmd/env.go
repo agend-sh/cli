@@ -59,8 +59,76 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvDeleteCmd())
 	cmd.AddCommand(newEnvWakeCmd())
+	cmd.AddCommand(newEnvAcquireCmd())
+	cmd.AddCommand(newEnvReleaseCmd())
+	cmd.AddCommand(newEnvHeartbeatCmd())
 
 	return cmd
+}
+
+// newEnvAcquireCmd checks out a shared team environment (ADR-020): it leases the
+// env exclusively and saves the returned one-time secret + endpoint as the
+// active environment, so subsequent `agend exec`/file commands target it.
+func newEnvAcquireCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "acquire <env-id>",
+		Short: "Check out a shared team environment (exclusive until you release)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			r, err := client.AcquireEnvironment(args[0])
+			if err != nil {
+				return err
+			}
+			if err := auth.SaveEnvironment(r.EnvID, r.Endpoint, r.Secret); err != nil {
+				return fmt.Errorf("save environment: %w", err)
+			}
+			fmt.Printf("Acquired %s (lease until %s)\n", r.EnvID, r.LeaseExpiry)
+			fmt.Printf("Run commands with 'agend exec ...'. Release when done:  agend env release %s\n", r.EnvID)
+			return nil
+		},
+	}
+}
+
+func newEnvReleaseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "release <env-id>",
+		Short: "Release your lease on a shared team environment",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			if err := client.ReleaseEnvironment(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("Released %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newEnvHeartbeatCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "heartbeat <env-id>",
+		Short: "Extend your lease on a shared team environment",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			if err := client.HeartbeatEnvironment(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("Lease extended on %s\n", args[0])
+			return nil
+		},
+	}
 }
 
 func newEnvListCmd() *cobra.Command {
