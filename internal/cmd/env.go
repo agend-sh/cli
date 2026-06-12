@@ -171,6 +171,19 @@ func newEnvCreateCmd() *cobra.Command {
 	}
 }
 
+// resolveEnvID returns the environment to act on: the first positional arg, or
+// the stored current environment when none is given.
+func resolveEnvID(args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	envID, _, _, _, err := auth.LoadEnvironment()
+	if err != nil || envID == "" {
+		return "", fmt.Errorf("no environment — run 'agend env create' first")
+	}
+	return envID, nil
+}
+
 func newEnvStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status [env-id]",
@@ -181,14 +194,9 @@ func newEnvStatusCmd() *cobra.Command {
 				return err
 			}
 
-			envID := ""
-			if len(args) > 0 {
-				envID = args[0]
-			} else {
-				envID, _, _, _, err = auth.LoadEnvironment()
-				if err != nil || envID == "" {
-					return fmt.Errorf("no environment — run 'agend env create' first")
-				}
+			envID, err := resolveEnvID(args)
+			if err != nil {
+				return err
 			}
 
 			resp, err := client.GetEnvironment(envID)
@@ -229,14 +237,9 @@ func newEnvDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			envID := ""
-			if len(args) > 0 {
-				envID = args[0]
-			} else {
-				envID, _, _, _, err = auth.LoadEnvironment()
-				if err != nil || envID == "" {
-					return fmt.Errorf("no environment — run 'agend env create' first")
-				}
+			envID, err := resolveEnvID(args)
+			if err != nil {
+				return err
 			}
 
 			resp, err := client.StopEnvironment(envID)
@@ -262,14 +265,9 @@ func newEnvWakeCmd() *cobra.Command {
 				return err
 			}
 
-			envID := ""
-			if len(args) > 0 {
-				envID = args[0]
-			} else {
-				envID, _, _, _, err = auth.LoadEnvironment()
-				if err != nil || envID == "" {
-					return fmt.Errorf("no environment — run 'agend env create' first")
-				}
+			envID, err := resolveEnvID(args)
+			if err != nil {
+				return err
 			}
 
 			fmt.Println("Waking environment...")
