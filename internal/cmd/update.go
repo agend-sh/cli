@@ -49,97 +49,26 @@ On the next launch, the new version takes effect automatically.`,
 
 			// Fetch latest release
 			fmt.Print("Checking for updates... ")
-			req, err := http.NewRequest("GET", releasesURL, nil)
+			tag, err := fetchLatestTag(client)
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Accept", "application/vnd.github+json")
 
-			resp, err := client.Do(req)
-			if err != nil {
-				return fmt.Errorf("failed to check for updates: %w", err)
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != 200 {
-				return fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-			}
-
-			var release githubRelease
-			if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-				return fmt.Errorf("failed to parse release: %w", err)
-			}
-
-			latest := strings.TrimPrefix(release.TagName, "v")
+			latest := strings.TrimPrefix(tag, "v")
 			current := strings.TrimPrefix(currentVersion, "v")
-
 			if latest == current && !force {
 				fmt.Printf("already up to date (%s)\n", currentVersion)
 				return nil
 			}
 
-			fmt.Printf("found %s (current: %s)\n", release.TagName, currentVersion)
-
-			// Fetch the expected checksum for this platform's archive
-			archiveName := fmt.Sprintf("agend-%s-%s-%s.tar.gz", latest, runtime.GOOS, runtime.GOARCH)
-			expectedSum, err := fetchChecksum(client, release.TagName, archiveName)
-			if err != nil {
-				return fmt.Errorf("fetch checksums: %w", err)
-			}
-
-			// Download tar.gz archive
-			url := fmt.Sprintf("%s/%s/%s", downloadURL, release.TagName, archiveName)
-
-			fmt.Printf("Downloading %s... ", archiveName)
-			dlResp, err := client.Get(url)
-			if err != nil {
-				return fmt.Errorf("download failed: %w", err)
-			}
-			defer dlResp.Body.Close()
-
-			if dlResp.StatusCode != 200 {
-				return fmt.Errorf("download failed: HTTP %d", dlResp.StatusCode)
-			}
-
-			// Spool to a temp file so the whole archive can be checksummed
-			// before anything is extracted or installed.
-			tmpArchive, err := downloadAndVerify(dlResp.Body, expectedSum)
-			if tmpArchive != "" {
-				defer os.Remove(tmpArchive)
-			}
-			if err != nil {
-				return err
-			}
-
-			archiveFile, err := os.Open(tmpArchive)
-			if err != nil {
-				return err
-			}
-			defer archiveFile.Close()
-
-			// Extract agend binary from tar.gz
-			tmpBinary, err := extractBinaryFromTarGz(archiveFile, "agend")
-			if err != nil {
-				return fmt.Errorf("extract failed: %w", err)
-			}
-			defer os.Remove(tmpBinary)
-
-			if err := os.Chmod(tmpBinary, 0755); err != nil {
-				return err
-			}
-
-			// Replace current binary using rename-swap trick.
-			// This is safe even if another agend process (e.g. `agend mcp`) is running:
-			// - Linux/macOS: the OS keeps the old binary in memory via the open fd;
-			//   renaming the file on disk doesn't affect the running process.
-			// - Windows: you can rename a running .exe but can't delete it.
-			//   We rename current → .old, put new in place, and clean up .old on next run.
-			if err := swapBinary(tmpBinary); err != nil {
+			fmt.Printf("found %s (current: %s)\n", tag, currentVersion)
+			fmt.Printf("Downloading agend-%s-%s-%s.tar.gz... ", latest, runtime.GOOS, runtime.GOARCH)
+			if err := installVersion(client, tag); err != nil {
 				return err
 			}
 
 			fmt.Println("done!")
-			fmt.Printf("Updated to %s\n", release.TagName)
+			fmt.Printf("Updated to %s\n", tag)
 			fmt.Println("Running MCP servers will use the new version on next restart.")
 			return nil
 		},
@@ -148,6 +77,84 @@ On the next launch, the new version takes effect automatically.`,
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "re-download even if already up to date")
 
 	return cmd
+}
+
+// fetchLatestTag returns the latest published release tag (e.g. "v1.1.4").
+func fetchLatestTag(client *http.Client) (string, error) {
+	req, err := http.NewRequest("GET", releasesURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to check for updates: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("failed to parse release: %w", err)
+	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("no tag_name in latest release")
+	}
+	return release.TagName, nil
+}
+
+// installVersion downloads the given release tag for this platform, verifies
+// its checksum (fail-closed), and atomically swaps it in for the running
+// binary. It prints nothing — callers handle UX.
+func installVersion(client *http.Client, tag string) error {
+	latest := strings.TrimPrefix(tag, "v")
+	archiveName := fmt.Sprintf("agend-%s-%s-%s.tar.gz", latest, runtime.GOOS, runtime.GOARCH)
+
+	expectedSum, err := fetchChecksum(client, tag, archiveName)
+	if err != nil {
+		return fmt.Errorf("fetch checksums: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/%s/%s", downloadURL, tag, archiveName)
+	dlResp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != 200 {
+		return fmt.Errorf("download failed: HTTP %d", dlResp.StatusCode)
+	}
+
+	// Spool to a temp file so the whole archive is checksummed before anything
+	// is extracted or installed.
+	tmpArchive, err := downloadAndVerify(dlResp.Body, expectedSum)
+	if tmpArchive != "" {
+		defer os.Remove(tmpArchive)
+	}
+	if err != nil {
+		return err
+	}
+
+	archiveFile, err := os.Open(tmpArchive)
+	if err != nil {
+		return err
+	}
+	defer archiveFile.Close()
+
+	tmpBinary, err := extractBinaryFromTarGz(archiveFile, "agend")
+	if err != nil {
+		return fmt.Errorf("extract failed: %w", err)
+	}
+	defer os.Remove(tmpBinary)
+
+	if err := os.Chmod(tmpBinary, 0755); err != nil {
+		return err
+	}
+
+	// Replace the current binary via rename-swap — safe even while another
+	// agend process is running (the OS keeps the old inode open via its fd).
+	return swapBinary(tmpBinary)
 }
 
 // fetchChecksum downloads checksums.txt from the release and returns the
