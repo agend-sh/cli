@@ -67,8 +67,11 @@ brews:
     install: |
       bin.install "agend"
     test: |
-      system "#{bin}/agend", "version"
-    skip_upload: true
+      system "#{bin}/agend", "--version"
+    # Push the generated formula to agend-sh/homebrew-tap on each real release.
+    # Requires the HOMEBREW_TAP_TOKEN secret (a PAT with write to homebrew-tap);
+    # the default GITHUB_TOKEN can't push to a different repo. Skips prereleases.
+    skip_upload: "auto"
 
 release:
   github:
