@@ -53,8 +53,11 @@ The agent can now reach the environment. It sees MCP tools like `shell_exec`, `f
 | `agend login --token <token>` | Authenticate with a direct API token |
 | `agend logout` | Clear local credentials |
 | `agend status` | Show auth and environment status |
+| `agend account list` | List saved accounts |
+| `agend account switch <email>` | Switch the active account |
+| `agend account remove <email>` | Remove a saved account |
 
-Credentials are stored in `~/.config/agend/credentials.json` (mode 0600).
+Credentials (and any saved accounts) are stored in `~/.config/agend/credentials.json` (mode 0600).
 
 ### Environments
 
@@ -65,6 +68,27 @@ Credentials are stored in `~/.config/agend/credentials.json` (mode 0600).
 | `agend env status [env-id]` | Show detailed environment info |
 | `agend env wake [env-id]` | Wake a sleeping environment (restores from snapshot) |
 | `agend env delete [env-id]` | Permanently delete an environment |
+
+### Teams (shared environments)
+
+A team owns a pool of shared environments. Members check one out at a time — a
+**lease** grants exclusive access until released (or it times out). See ADR-020.
+
+| Command | Description |
+|---------|-------------|
+| `agend team create <name>` | Create a team (you become the owner) |
+| `agend team list` | List your teams |
+| `agend team invite <team-id> <email>` | Invite a member by email |
+| `agend team accept <team-id>` | Accept an invitation |
+| `agend team members <team-id>` | List team members |
+| `agend team envs <team-id>` | List the team's shared environments + lease status |
+| `agend team env-create <team-id>` | Create a shared environment in the team pool |
+| `agend env acquire <env-id>` | Check out a shared env (exclusive until released) |
+| `agend env release <env-id>` | Release your lease |
+| `agend env heartbeat <env-id>` | Extend your lease while connected |
+
+`agend mcp` auto-acquires the active team env on start, heartbeats while connected,
+and releases on exit — so an AI agent shares a team box seamlessly.
 
 ### Shell (direct gRPC)
 
@@ -91,6 +115,16 @@ Credentials are stored in `~/.config/agend/credentials.json` (mode 0600).
 |---------|-------------|
 | `agend task-output <id>` | Get output of a background task |
 | `agend task-stop <id>` | Stop a background task |
+
+### Custom domains
+
+Expose a service running in your environment under your own domain.
+
+| Command | Description |
+|---------|-------------|
+| `agend domain add <domain>` | Map a custom domain to an exposed port |
+| `agend domain list` | List your mapped domains |
+| `agend domain remove <domain>` | Remove a domain mapping |
 
 ### MCP server
 
