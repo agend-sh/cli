@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -280,10 +281,25 @@ func (s *Server) resolveEnvID(ref string) string {
 	return ref // not found — pass through, will error with "not found"
 }
 
+// controlPlaneErr converts a control-plane API failure into an actionable MCP
+// message. The common case after the session JWT lapses is a 401 — guide the
+// user to re-authenticate instead of surfacing a bare "api error 401", which
+// reads to the agent as an opaque connection failure. `agend login` refreshes
+// the token on disk; reload_config makes this running MCP server pick it up
+// (it re-reads credentials + resets connections), so no restart is needed.
+func controlPlaneErr(action string, err error) string {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 401 {
+		return "Your agend session has expired or you're not signed in. " +
+			"To reconnect: run `agend login` in a terminal, then call the reload_config tool and retry."
+	}
+	return fmt.Sprintf("%s failed: %v", action, err)
+}
+
 func (s *Server) listEnvironments() (string, bool) {
 	resp, err := s.api.ListEnvironments()
 	if err != nil {
-		return fmt.Sprintf("list environments failed: %v", err), true
+		return controlPlaneErr("list environments", err), true
 	}
 
 	if len(resp.Environments) == 0 {
@@ -304,7 +320,7 @@ func (s *Server) listEnvironments() (string, bool) {
 func (s *Server) envCreate() (string, bool) {
 	resp, err := s.api.CreateEnvironment()
 	if err != nil {
-		return fmt.Sprintf("create failed: %v", err), true
+		return controlPlaneErr("create environment", err), true
 	}
 	// Store credentials so the connection pool can authenticate,
 	// and persist to disk so MCP restarts can recover them.
@@ -327,7 +343,7 @@ func (s *Server) envStatus(envRef string) (string, bool) {
 	envID := s.resolveEnvID(envRef)
 	resp, err := s.api.GetEnvironment(envID)
 	if err != nil {
-		return fmt.Sprintf("status failed: %v", err), true
+		return controlPlaneErr("environment status", err), true
 	}
 	return fmt.Sprintf("env_id: %s\nstate: %s\ntier: %s\nendpoint: %s\ncreated: %s\nlast_active: %s",
 		resp.EnvID, resp.State, resp.Tier, resp.Endpoint, resp.CreatedAt, resp.LastActive), false
@@ -340,7 +356,7 @@ func (s *Server) envWake(envRef string) (string, bool) {
 	envID := s.resolveEnvID(envRef)
 	resp, err := s.api.WakeEnvironment(envID)
 	if err != nil {
-		return fmt.Sprintf("wake failed: %v", err), true
+		return controlPlaneErr("wake environment", err), true
 	}
 	// Store credentials so the connection pool can authenticate,
 	// and persist to disk so MCP restarts can recover them.
