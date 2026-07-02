@@ -65,7 +65,14 @@ func resolveLocalPath(path string) (string, error) {
 		return "", err
 	}
 
-	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+	// Roots that already end in a separator (filesystem root "/", Windows
+	// drive roots like "C:\") must not get a second one appended, or the
+	// prefix never matches and every path is rejected.
+	rootPrefix := root
+	if !strings.HasSuffix(rootPrefix, string(filepath.Separator)) {
+		rootPrefix += string(filepath.Separator)
+	}
+	if resolved != root && !strings.HasPrefix(resolved, rootPrefix) {
 		return "", fmt.Errorf("local_path %s is outside the allowed directory %s (set AGEND_LOCAL_ROOT to change it)", path, root)
 	}
 	return resolved, nil

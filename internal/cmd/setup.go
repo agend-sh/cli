@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	addmcp "github.com/acolita/go-add-mcp"
@@ -32,7 +35,7 @@ Supported agents:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			server := addmcp.Server{
 				Name:    "agend",
-				Command: "agend",
+				Command: mcpCommand(),
 				Args:    []string{"mcp"},
 			}
 
@@ -101,6 +104,25 @@ Supported agents:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be configured without writing files")
 
 	return cmd
+}
+
+// mcpCommand is the command written into agent MCP configs. On unix the bare
+// name resolves via PATH everywhere. On Windows some MCP hosts spawn without
+// a shell and don't apply PATHEXT, so a bare "agend" fails even when
+// agend.exe is on PATH — write the absolute path of the running binary
+// instead (self-update swaps in place, so the path stays valid).
+func mcpCommand() string {
+	if runtime.GOOS != "windows" {
+		return "agend"
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "agend.exe"
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return exe
 }
 
 func agentNames() []string {

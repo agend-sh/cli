@@ -22,13 +22,21 @@ func newSignupCmd() *cobra.Command {
 				return fmt.Errorf("--email is required")
 			}
 
-			fmt.Fprint(os.Stderr, "Password: ")
-			pwBytes, err := term.ReadPassword(int(syscall.Stdin))
-			if err != nil {
-				return fmt.Errorf("failed to read password: %w", err)
+			// Never a flag — argv is visible via ps. Non-interactive use
+			// (pipes, agents) sets AGEND_PASSWORD, same as `agend login`.
+			password := os.Getenv("AGEND_PASSWORD")
+			if password == "" {
+				if !term.IsTerminal(int(syscall.Stdin)) {
+					return fmt.Errorf("stdin is not a terminal — set AGEND_PASSWORD for non-interactive signup")
+				}
+				fmt.Fprint(os.Stderr, "Password: ")
+				pwBytes, err := term.ReadPassword(int(syscall.Stdin))
+				if err != nil {
+					return fmt.Errorf("failed to read password: %w", err)
+				}
+				fmt.Fprintln(os.Stderr)
+				password = string(pwBytes)
 			}
-			fmt.Fprintln(os.Stderr)
-			password := string(pwBytes)
 
 			if len(password) < 8 {
 				return fmt.Errorf("password must be at least 8 characters")

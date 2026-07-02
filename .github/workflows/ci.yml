@@ -12,7 +12,10 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -28,3 +31,11 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      # Cross-compile check for the platforms the windows/ubuntu runners
+      # don't cover natively, so a GOOS-specific break can't reach a release.
+      - name: Cross-compile (darwin, windows/arm64)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          GOOS=darwin GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=arm64 go build ./...

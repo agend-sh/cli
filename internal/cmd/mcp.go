@@ -39,6 +39,11 @@ func newMCPCmd(version string) *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			// SIGTERM never fires on Windows (TerminateProcess is not
+			// catchable); the shutdown path there is the MCP host closing
+			// stdin → server.Run returns on EOF → deferred releaseLease runs.
+			// A hard kill leaks the lease until its server-side TTL, same as
+			// SIGKILL on unix.
 			go func() {
 				sig := make(chan os.Signal, 1)
 				signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

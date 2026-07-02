@@ -58,8 +58,11 @@ type Server struct {
 }
 
 func NewServer(apiClient *api.Client, version string) *Server {
+	// A single JSON-RPC line must fit the scanner buffer or Scan() fails and
+	// the whole server exits. file_write sends file content inline, so allow
+	// large lines (cap 64MB) while starting small.
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	return &Server{
 		pool:     NewConnPool(apiClient),
 		api:      apiClient,

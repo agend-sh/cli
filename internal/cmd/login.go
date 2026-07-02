@@ -35,6 +35,9 @@ func newLoginCmd() *cobra.Command {
 			if email != "" {
 				pw := os.Getenv("AGEND_PASSWORD")
 				if pw == "" {
+					if !term.IsTerminal(int(syscall.Stdin)) {
+						return fmt.Errorf("stdin is not a terminal — set AGEND_PASSWORD for non-interactive login")
+					}
 					fmt.Fprint(os.Stderr, "Password: ")
 					pwBytes, err := term.ReadPassword(int(syscall.Stdin))
 					if err != nil {

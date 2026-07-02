@@ -12,13 +12,21 @@ CLI and MCP server for [agend.sh](https://agend.sh) -- remote dev environments e
 brew install agend-sh/tap/agend
 ```
 
-**curl**
+**curl** (Linux/macOS)
 
 ```sh
 curl -fsSL agend.sh/i | sh
 ```
 
 The installer downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `/usr/local/bin`.
+
+**Windows** (PowerShell)
+
+```powershell
+irm agend.sh/i.ps1 | iex
+```
+
+Installs `agend.exe` to `%LOCALAPPDATA%\agend\bin` (checksum-verified) and adds it to your user `PATH`. Corporate proxies: Go binaries use the `HTTPS_PROXY`/`HTTP_PROXY` environment variables, not the Windows system proxy settings — set them if your network requires a proxy.
 
 **From source**
 

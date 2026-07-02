@@ -81,9 +81,12 @@ func ClassifyText(msg string) Category {
 	}
 
 	// Stale endpoint — tunnel dead, need a fresh endpoint.
+	// "actively refused" is the Windows (connectex/WSAECONNREFUSED) spelling
+	// of connection refused.
 	if strings.Contains(t, "status code 530") ||
 		strings.Contains(t, "no such host") ||
 		strings.Contains(t, "connection refused") ||
+		strings.Contains(t, "actively refused") ||
 		strings.Contains(t, "environment unreachable") ||
 		(strings.Contains(t, "tunnel connection") && strings.Contains(t, "failed")) ||
 		strings.Contains(t, "may be stopped or expired") ||
@@ -92,10 +95,13 @@ func ClassifyText(msg string) Category {
 	}
 
 	// Transient — tunnel flap, tableflip, brief outage.
+	// "forcibly closed" is the Windows (wsarecv/WSAECONNRESET) spelling of
+	// connection reset.
 	if strings.Contains(t, "unavailable") ||
 		strings.Contains(t, "status code 502") || strings.Contains(t, "status code 503") ||
 		strings.Contains(t, "i/o timeout") ||
 		strings.Contains(t, "connection reset") ||
+		strings.Contains(t, "forcibly closed") ||
 		strings.Contains(t, "deadline exceeded") ||
 		strings.Contains(t, "unreachable") {
 		return Transient

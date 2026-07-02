@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -379,10 +380,13 @@ func BrowserLogin() (string, error) {
 	}
 	nonce := hex.EncodeToString(nonceBytes)
 
+	// The callback URL uses the literal 127.0.0.1 the listener is bound to —
+	// "localhost" can resolve to ::1 first (common on Windows), and a browser
+	// that doesn't fall back to IPv4 would get connection-refused.
 	port := listener.Addr().(*net.TCPAddr).Port
 	callbackPath := "/callback/" + nonce
-	callbackURL := fmt.Sprintf("http://localhost:%d%s", port, callbackPath)
-	authURL := fmt.Sprintf("https://agend.sh/auth/cli?callback=%s", callbackURL)
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, callbackPath)
+	authURL := "https://agend.sh/auth/cli?callback=" + url.QueryEscape(callbackURL)
 
 	openBrowser(authURL)
 
@@ -413,14 +417,18 @@ func BrowserLogin() (string, error) {
 
 	server := &http.Server{Handler: mux}
 	go server.Serve(listener)
+	defer server.Close()
 
+	// Bounded wait — if the browser never completes the flow (blocked popup,
+	// closed tab, IPv6-only resolver), fail with guidance instead of hanging
+	// the terminal forever.
 	select {
 	case token := <-tokenCh:
-		server.Close()
 		return token, nil
 	case err := <-errCh:
-		server.Close()
 		return "", err
+	case <-time.After(5 * time.Minute):
+		return "", errors.New("timed out waiting for browser login — try again, or use 'agend login --email you@example.com'")
 	}
 }
 

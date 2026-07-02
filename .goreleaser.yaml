@@ -16,6 +16,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -23,6 +24,12 @@ builds:
 archives:
   - formats:
       - tar.gz
+    # Windows gets a zip (native extraction, and what `agend update` expects
+    # there — see internal/cmd/update.go archiveName).
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
 
 checksum:

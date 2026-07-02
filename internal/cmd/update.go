@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"compress/gzip"
 	"crypto/sha256"
@@ -26,6 +27,33 @@ const (
 
 type githubRelease struct {
 	TagName string `json:"tag_name"`
+}
+
+// archiveName returns the release asset name for this platform, matching
+// .goreleaser.yaml: tar.gz everywhere except windows, which ships zip.
+func archiveName(version string) string {
+	ext := "tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = "zip"
+	}
+	return fmt.Sprintf("agend-%s-%s-%s.%s", version, runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// binaryName is the executable's name inside the release archive.
+func binaryName() string {
+	if runtime.GOOS == "windows" {
+		return "agend.exe"
+	}
+	return "agend"
+}
+
+// reinstallHint tells the user how to reinstall from scratch when the
+// in-place swap fails.
+func reinstallHint() string {
+	if runtime.GOOS == "windows" {
+		return "try: irm agend.sh/i.ps1 | iex"
+	}
+	return "try: curl -fsSL agend.sh/i | sh"
 }
 
 func newUpdateCmd(currentVersion string) *cobra.Command {
@@ -62,7 +90,7 @@ On the next launch, the new version takes effect automatically.`,
 			}
 
 			fmt.Printf("found %s (current: %s)\n", tag, currentVersion)
-			fmt.Printf("Downloading agend-%s-%s-%s.tar.gz... ", latest, runtime.GOOS, runtime.GOARCH)
+			fmt.Printf("Downloading %s... ", archiveName(latest))
 			if err := installVersion(client, tag); err != nil {
 				return err
 			}
@@ -109,14 +137,14 @@ func fetchLatestTag(client *http.Client) (string, error) {
 // binary. It prints nothing — callers handle UX.
 func installVersion(client *http.Client, tag string) error {
 	latest := strings.TrimPrefix(tag, "v")
-	archiveName := fmt.Sprintf("agend-%s-%s-%s.tar.gz", latest, runtime.GOOS, runtime.GOARCH)
+	asset := archiveName(latest)
 
-	expectedSum, err := fetchChecksum(client, tag, archiveName)
+	expectedSum, err := fetchChecksum(client, tag, asset)
 	if err != nil {
 		return fmt.Errorf("fetch checksums: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/%s/%s", downloadURL, tag, archiveName)
+	url := fmt.Sprintf("%s/%s/%s", downloadURL, tag, asset)
 	dlResp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -127,8 +155,9 @@ func installVersion(client *http.Client, tag string) error {
 	}
 
 	// Spool to a temp file so the whole archive is checksummed before anything
-	// is extracted or installed.
-	tmpArchive, err := downloadAndVerify(dlResp.Body, expectedSum)
+	// is extracted or installed. The temp name keeps the asset's extension —
+	// extractBinary dispatches zip vs tar.gz on it.
+	tmpArchive, err := downloadAndVerify(dlResp.Body, expectedSum, asset)
 	if tmpArchive != "" {
 		defer os.Remove(tmpArchive)
 	}
@@ -136,13 +165,15 @@ func installVersion(client *http.Client, tag string) error {
 		return err
 	}
 
-	archiveFile, err := os.Open(tmpArchive)
+	// Extract into the install directory, not the system temp dir: the final
+	// os.Rename must stay on one volume (cross-volume renames fail — always on
+	// Windows when agend lives off C:, and on Linux when /tmp is tmpfs).
+	destDir, err := installTargetDir()
 	if err != nil {
 		return err
 	}
-	defer archiveFile.Close()
 
-	tmpBinary, err := extractBinaryFromTarGz(archiveFile, "agend")
+	tmpBinary, err := extractBinary(tmpArchive, binaryName(), destDir)
 	if err != nil {
 		return fmt.Errorf("extract failed: %w", err)
 	}
@@ -155,6 +186,20 @@ func installVersion(client *http.Client, tag string) error {
 	// Replace the current binary via rename-swap — safe even while another
 	// agend process is running (the OS keeps the old inode open via its fd).
 	return swapBinary(tmpBinary)
+}
+
+// installTargetDir returns the directory of the (symlink-resolved) running
+// binary — where the update will be installed.
+func installTargetDir() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot find current binary: %w", err)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve binary path: %w", err)
+	}
+	return filepath.Dir(execPath), nil
 }
 
 // fetchChecksum downloads checksums.txt from the release and returns the
@@ -192,8 +237,12 @@ func fetchChecksum(client *http.Client, tag, archiveName string) (string, error)
 // then compares against the expected sha256. Returns the temp file path;
 // on mismatch the file path is still returned (so the caller can clean up)
 // along with the error.
-func downloadAndVerify(r io.Reader, expectedSum string) (string, error) {
-	tmp, err := os.CreateTemp("", "agend-archive-*.tar.gz")
+func downloadAndVerify(r io.Reader, expectedSum, assetName string) (string, error) {
+	ext := ".tar.gz"
+	if strings.HasSuffix(assetName, ".zip") {
+		ext = ".zip"
+	}
+	tmp, err := os.CreateTemp("", "agend-archive-*"+ext)
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +282,7 @@ func swapBinary(newPath string) error {
 
 	// Step 1: Rename running binary out of the way
 	if err := os.Rename(execPath, oldPath); err != nil {
-		return fmt.Errorf("rename current binary: %w (try: curl -fsSL agend.sh/i | sh)", err)
+		return fmt.Errorf("rename current binary: %w (%s)", err, reinstallHint())
 	}
 
 	// Step 2: Move new binary into place
@@ -264,9 +313,25 @@ func cleanupOldBinary() {
 	os.Remove(execPath + ".old")
 }
 
+// extractBinary extracts the named binary from the archive at archivePath
+// into a temp file inside destDir (same volume as the final install path),
+// returning the temp file path. Zip archives are what windows releases ship;
+// everything else is tar.gz.
+func extractBinary(archivePath, name, destDir string) (string, error) {
+	if strings.HasSuffix(archivePath, ".zip") {
+		return extractBinaryFromZip(archivePath, name, destDir)
+	}
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	return extractBinaryFromTarGz(f, name, destDir)
+}
+
 // extractBinaryFromTarGz extracts a named file from a tar.gz stream
-// and writes it to a temp file, returning the temp file path.
-func extractBinaryFromTarGz(r io.Reader, name string) (string, error) {
+// and writes it to a temp file in destDir, returning the temp file path.
+func extractBinaryFromTarGz(r io.Reader, name, destDir string) (string, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return "", fmt.Errorf("gzip: %w", err)
@@ -284,18 +349,45 @@ func extractBinaryFromTarGz(r io.Reader, name string) (string, error) {
 		}
 
 		if hdr.Name == name || strings.HasSuffix(hdr.Name, "/"+name) {
-			tmp, err := os.CreateTemp("", "agend-update-*")
-			if err != nil {
-				return "", err
-			}
-
-			if _, err := io.Copy(tmp, tr); err != nil {
-				tmp.Close()
-				os.Remove(tmp.Name())
-				return "", err
-			}
-			tmp.Close()
-			return tmp.Name(), nil
+			return spoolToTemp(tr, destDir)
 		}
 	}
+}
+
+// extractBinaryFromZip extracts a named file from a zip archive and writes
+// it to a temp file in destDir, returning the temp file path.
+func extractBinaryFromZip(archivePath, name, destDir string) (string, error) {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return "", fmt.Errorf("zip: %w", err)
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		if f.Name == name || strings.HasSuffix(f.Name, "/"+name) {
+			rc, err := f.Open()
+			if err != nil {
+				return "", fmt.Errorf("zip: %w", err)
+			}
+			tmp, err := spoolToTemp(rc, destDir)
+			rc.Close()
+			return tmp, err
+		}
+	}
+	return "", fmt.Errorf("%s not found in archive", name)
+}
+
+// spoolToTemp writes r to a new temp file in dir and returns its path.
+func spoolToTemp(r io.Reader, dir string) (string, error) {
+	tmp, err := os.CreateTemp(dir, ".agend-update-*")
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(tmp, r); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	tmp.Close()
+	return tmp.Name(), nil
 }
