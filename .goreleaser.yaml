@@ -62,23 +62,11 @@ changelog:
       - "^test:"
       - "^ci:"
 
-brews:
-  - repository:
-      owner: agend-sh
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://agend.sh"
-    description: "CLI for agend — remote environments for AI agents"
-    license: "MIT"
-    install: |
-      bin.install "agend"
-    test: |
-      system "#{bin}/agend", "--version"
-    # Push the generated formula to agend-sh/homebrew-tap on each real release.
-    # Requires the HOMEBREW_TAP_TOKEN secret (a PAT with write to homebrew-tap);
-    # the default GITHUB_TOKEN can't push to a different repo. Skips prereleases.
-    skip_upload: "auto"
+# The Homebrew formula is NOT pushed from here: agend-sh/homebrew-tap updates
+# itself (.github/workflows/update-formula.yml polls the latest release and
+# regenerates Formula/agend.rb from checksums.txt with its own GITHUB_TOKEN).
+# The old brews push needed a cross-repo PAT that kept expiring and failing
+# this release after the artifacts were already published.
 
 release:
   github:

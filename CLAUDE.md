@@ -28,16 +28,15 @@ keep it green:
 ## Release
 
 Tag `v*` → `.github/workflows/release.yml` → GoReleaser → GitHub release
-(linux/darwin tar.gz, windows zip, checksums.txt + keyless cosign sig) →
-Homebrew formula push to agend-sh/homebrew-tap.
+(linux/darwin tar.gz, windows zip, checksums.txt + keyless cosign sig).
 
-- The brews step runs LAST and needs the `HOMEBREW_TAP_TOKEN` secret (a PAT
-  with write on agend-sh/homebrew-tap). If it 401s, the GitHub release is
-  still complete — only the formula is stale. Manual fix: regenerate
-  Formula/agend.rb (bump version/urls/sha256 from checksums.txt) and push via
-  `gh api -X PUT /repos/agend-sh/homebrew-tap/contents/Formula/agend.rb`.
-- `goreleaser check` warns that `brews` is deprecated (→ homebrew_casks
-  someday); it still works.
+- The Homebrew formula is NOT pushed from this repo. agend-sh/homebrew-tap
+  updates itself: `.github/workflows/update-formula.yml` there polls the
+  latest release (cron every 30 min + workflow_dispatch) and regenerates
+  Formula/agend.rb from checksums.txt with its own GITHUB_TOKEN — no PAT,
+  no deploy key, nothing to expire. The release workflow pokes it
+  best-effort; worst case the formula lags one poll interval. To force:
+  `gh workflow run update-formula.yml -R agend-sh/homebrew-tap`.
 - Self-update (`internal/cmd/update.go`) mirrors the release layout: tar.gz +
   `agend` member everywhere, zip + `agend.exe` on Windows. If you change
   archive naming in .goreleaser.yaml, update `archiveName`/`binaryName` too.

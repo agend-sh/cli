@@ -34,4 +34,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Nudge the self-updating tap so brew users don't wait for its next
+      # scheduled poll. Best-effort: GITHUB_TOKEN can't dispatch cross-repo,
+      # so failures only log — the tap's cron catches up regardless.
+      - name: Poke homebrew-tap update (best-effort)
+        if: ${{ !contains(github.ref_name, '-') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run update-formula.yml -R agend-sh/homebrew-tap || echo "cross-repo dispatch unavailable; tap cron will pick it up"
