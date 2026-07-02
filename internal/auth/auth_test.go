@@ -2,13 +2,15 @@ package auth
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
 func setupHome(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	t.Setenv("HOME", tmp)        // unix
+	t.Setenv("USERPROFILE", tmp) // windows — os.UserHomeDir reads this there
 }
 
 func TestSaveAndLoadToken(t *testing.T) {
@@ -167,6 +169,9 @@ func TestLoadAPIURLNoConfig(t *testing.T) {
 }
 
 func TestConfigFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are not meaningful on Windows (ACLs protect the profile dir)")
+	}
 	setupHome(t)
 
 	if err := SaveToken("tok_perm"); err != nil {

@@ -72,14 +72,15 @@ func TestResolveLocalPath(t *testing.T) {
 // A root that already ends in the separator (filesystem root "/", Windows
 // drive roots like "C:\") must not reject everything under it.
 func TestResolveLocalPathAtFilesystemRoot(t *testing.T) {
-	root := string(filepath.Separator) // "/" on unix, resolves paths under it
-	t.Setenv("AGEND_LOCAL_ROOT", root)
-
 	dir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// "/" on unix, "C:\" (the temp dir's volume) on windows.
+	root := filepath.VolumeName(dir) + string(filepath.Separator)
+	t.Setenv("AGEND_LOCAL_ROOT", root)
 	file := filepath.Join(dir, "ok.txt")
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
 		t.Fatal(err)

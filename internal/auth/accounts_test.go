@@ -16,17 +16,20 @@ func jwtFor(email string) string {
 	return hdr + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
-func isolateHome(t *testing.T) {
+func isolateHome(t *testing.T) string {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)        // unix
+	t.Setenv("USERPROFILE", tmp) // windows — os.UserHomeDir reads this there
+	return tmp
 }
 
 // V1 flat credentials must migrate into a v2 account without losing the
 // token/env, and become the active account.
 func TestMigrateV1ToV2(t *testing.T) {
-	isolateHome(t)
+	home := isolateHome(t)
 	tok := jwtFor("old@acme.test")
-	dir := filepath.Join(os.Getenv("HOME"), ".config", "agend")
+	dir := filepath.Join(home, ".config", "agend")
 	os.MkdirAll(dir, 0700)
 	v1 := `{"token":"` + tok + `","env_id":"env-1","endpoint":"https://x","session_token":"st"}`
 	os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(v1), 0600)
