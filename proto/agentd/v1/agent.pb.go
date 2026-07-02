@@ -1785,8 +1785,10 @@ type PingResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	UptimeSeconds uint64                 `protobuf:"varint,2,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Unix ms of the last authenticated client call, 0 if none since boot.
+	LastClientActivityUnixMs int64 `protobuf:"varint,3,opt,name=last_client_activity_unix_ms,json=lastClientActivityUnixMs,proto3" json:"last_client_activity_unix_ms,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *PingResponse) Reset() {
@@ -1829,6 +1831,13 @@ func (x *PingResponse) GetVersion() string {
 func (x *PingResponse) GetUptimeSeconds() uint64 {
 	if x != nil {
 		return x.UptimeSeconds
+	}
+	return 0
+}
+
+func (x *PingResponse) GetLastClientActivityUnixMs() int64 {
+	if x != nil {
+		return x.LastClientActivityUnixMs
 	}
 	return 0
 }
@@ -1967,10 +1976,11 @@ const file_proto_agentd_v1_agent_proto_rawDesc = "" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x16\n" +
 	"\x06domain\x18\x03 \x01(\tR\x06domain\"\r\n" +
-	"\vPingRequest\"O\n" +
+	"\vPingRequest\"\x8f\x01\n" +
 	"\fPingResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12%\n" +
-	"\x0euptime_seconds\x18\x02 \x01(\x04R\ruptimeSeconds2\xb1\b\n" +
+	"\x0euptime_seconds\x18\x02 \x01(\x04R\ruptimeSeconds\x12>\n" +
+	"\x1clast_client_activity_unix_ms\x18\x03 \x01(\x03R\x18lastClientActivityUnixMs2\xb1\b\n" +
 	"\fAgentService\x127\n" +
 	"\x04Exec\x12\x16.agentd.v1.ExecRequest\x1a\x17.agentd.v1.ExecResponse\x12:\n" +
 	"\x05Input\x12\x17.agentd.v1.InputRequest\x1a\x18.agentd.v1.InputResponse\x12C\n" +

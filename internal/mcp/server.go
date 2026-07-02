@@ -80,6 +80,7 @@ const maxCallDuration = 10 * time.Minute
 
 func (s *Server) Run(ctx context.Context) error {
 	defer s.pool.CloseAll()
+	s.pool.BindContext(ctx)
 
 	for s.scanner.Scan() {
 		line := s.scanner.Bytes()

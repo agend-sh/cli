@@ -40,18 +40,36 @@ type EnvConn struct {
 	lastPing  time.Time
 }
 
+// heartbeatInterval is how often a connected environment is pinged. The ping
+// is authenticated, so it doubles as the "user is attached" signal the
+// platform uses to keep a workstation awake: while the MCP client holds a
+// live connection, heartbeats flow and the env's idle clock never starts.
+// Heartbeats stop the moment the connection drops (StartHealthCheck only
+// pings in StateConnected), so they can never wake a sleeping env.
+const heartbeatInterval = 60 * time.Second
+
 // ConnPool manages connections to multiple environments.
 type ConnPool struct {
 	mu        sync.RWMutex
 	conns     map[string]*EnvConn
 	apiClient *api.Client
+	ctx       context.Context // bounds heartbeat goroutines to the server's lifetime
 }
 
 func NewConnPool(apiClient *api.Client) *ConnPool {
 	return &ConnPool{
 		conns:     make(map[string]*EnvConn),
 		apiClient: apiClient,
+		ctx:       context.Background(),
 	}
+}
+
+// BindContext sets the context that bounds per-connection heartbeat
+// goroutines. Call once before serving.
+func (p *ConnPool) BindContext(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ctx = ctx
 }
 
 // Get returns the connection for an environment, creating one if needed.
@@ -68,6 +86,7 @@ func (p *ConnPool) Get(envID string) *EnvConn {
 		state:     StateDisconnected,
 		apiClient: p.apiClient,
 	}
+	conn.StartHealthCheck(p.ctx, heartbeatInterval)
 	p.conns[envID] = conn
 	return conn
 }
@@ -359,8 +378,10 @@ func (c *EnvConn) close() {
 }
 
 // StartHealthCheck runs a background goroutine that pings the environment
-// every interval. If the ping fails, it marks the connection as disconnected
-// so the next tool call triggers reconnection proactively.
+// every interval while connected. The ping carries the session token, so it
+// is also the liveness heartbeat that keeps the workstation awake server-side.
+// If the ping fails, it marks the connection as disconnected so heartbeats
+// stop (never waking a sleeping env) and the next tool call reconnects.
 func (c *EnvConn) StartHealthCheck(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -379,9 +400,13 @@ func (c *EnvConn) StartHealthCheck(ctx context.Context, interval time.Duration) 
 				client := c.client
 				c.mu.Unlock()
 
-				_, err := client.Agent.Ping(ctx, nil)
+				// Bounded per-ping deadline: a wedged tunnel must not stall
+				// the loop for the server's whole lifetime.
+				pingCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				_, err := client.Agent.Ping(pingCtx, nil)
+				cancel()
 				if err != nil {
-					log.Printf("[env:%s] health check failed: %v", c.envID, err)
+					log.Printf("[env:%s] heartbeat failed, marking disconnected: %v", c.envID, err)
 					c.mu.Lock()
 					c.close()
 					c.mu.Unlock()

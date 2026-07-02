@@ -278,4 +278,6 @@ message PingRequest {}
 message PingResponse {
   string version = 1;
   uint64 uptime_seconds = 2;
+  // Unix ms of the last authenticated client call, 0 if none since boot.
+  int64 last_client_activity_unix_ms = 3;
 }
