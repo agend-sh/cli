@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -17,7 +16,7 @@ func newPingCmd() *cobra.Command {
 		Use:   "ping",
 		Short: "Ping the agentd daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Ping(ctx, &pb.PingRequest{})
 				if err != nil {

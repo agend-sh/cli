@@ -12,14 +12,14 @@ import (
 // dialDaemon connects to agentd with auth. If addr is the default and a stored
 // environment exists, it uses the stored endpoint, secret, and session token.
 func dialDaemon(ctx context.Context, cmd *cobra.Command, addr string) (*agentgrpc.Client, error) {
+	envID := ""
 	secret := ""
 	sessionToken := ""
 	if !cmd.Flags().Changed("addr") {
-		_, endpoint, s, st, err := auth.LoadEnvironment()
+		storedEnvID, endpoint, s, st, err := auth.LoadEnvironment()
 		if err == nil && endpoint != "" {
 			addr = endpoint
-		}
-		if err == nil {
+			envID = storedEnvID
 			secret = s
 			sessionToken = st
 		}
@@ -28,9 +28,12 @@ func dialDaemon(ctx context.Context, cmd *cobra.Command, addr string) (*agentgrp
 	if err != nil {
 		return nil, err
 	}
-	// Persist session token so subsequent CLI invocations reuse it
-	client.OnTokenReceived = func(token string) {
-		_ = auth.SaveSessionToken(token)
+	// Persist only if this exact environment credential is still current. An
+	// overlapping credential change wins over a late callback from this client.
+	if envID != "" {
+		client.OnTokenReceived = func(token string) {
+			_, _ = auth.SaveSessionTokenForEnvironment(envID, secret, sessionToken, token)
+		}
 	}
 	return client, nil
 }

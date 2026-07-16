@@ -290,6 +290,20 @@ func TestCancelledCallerStopsWaitingForHandshakeGate(t *testing.T) {
 	}
 }
 
+func TestCancelledContextNeverAcquiresAvailableHandshakeGate(t *testing.T) {
+	client := &Client{}
+	for i := 0; i < 100; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := client.acquireAuth(ctx); !errors.Is(err, context.Canceled) {
+			if err == nil {
+				client.releaseAuth()
+			}
+			t.Fatalf("acquireAuth iteration %d = %v, want context.Canceled", i, err)
+		}
+	}
+}
+
 func TestNeedsTCPTunnel(t *testing.T) {
 	cases := []struct {
 		addr string

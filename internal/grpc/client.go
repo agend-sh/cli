@@ -249,10 +249,17 @@ func (c *Client) acquireAuth(ctx context.Context) error {
 		c.authGate = make(chan struct{}, 1)
 		c.authGate <- struct{}{}
 	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.authGate:
+		if err := ctx.Err(); err != nil {
+			c.authGate <- struct{}{}
+			return err
+		}
 		return nil
 	}
 }

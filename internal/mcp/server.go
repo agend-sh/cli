@@ -331,9 +331,12 @@ func (s *Server) envCreate() (string, bool) {
 	// and persist to disk so MCP restarts can recover them.
 	if resp.Secret != "" {
 		conn := s.pool.Get(resp.EnvID)
-		conn.SetSecret(resp.Secret)
+		if err := conn.SetSecret(resp.Endpoint, resp.Secret); err != nil {
+			return fmt.Sprintf("create environment succeeded but persisting credentials failed: %v", err), true
+		}
+	} else if err := auth.SaveEnvironment(resp.EnvID, resp.Endpoint, ""); err != nil {
+		return fmt.Sprintf("create environment succeeded but persisting endpoint failed: %v", err), true
 	}
-	auth.SaveEnvironment(resp.EnvID, resp.Endpoint, resp.Secret)
 	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s\n"+
 		"note: a freshly-created tunnel can take up to ~60s to start routing. "+
 		"The first shell_exec may need a few seconds — the connection auto-retries; "+
@@ -367,9 +370,12 @@ func (s *Server) envWake(envRef string) (string, bool) {
 	// and persist to disk so MCP restarts can recover them.
 	if resp.Secret != "" {
 		conn := s.pool.Get(envID)
-		conn.SetSecret(resp.Secret)
+		if err := conn.SetSecret(resp.Endpoint, resp.Secret); err != nil {
+			return fmt.Sprintf("wake succeeded but persisting credentials failed: %v", err), true
+		}
+	} else if err := auth.SaveEnvironment(envID, resp.Endpoint, ""); err != nil {
+		return fmt.Sprintf("wake succeeded but persisting endpoint failed: %v", err), true
 	}
-	auth.SaveEnvironment(envID, resp.Endpoint, resp.Secret)
 	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s", resp.EnvID, resp.State, resp.Endpoint), false
 }
 
