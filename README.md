@@ -104,10 +104,11 @@ and releases on exit — so an AI agent shares a team box seamlessly.
 |---------|-------------|
 | `agend exec <cmd>` | Execute a command remotely |
 | `agend input <text>` | Send input to a process waiting for input |
+| `agend resize <columns> <rows>` | Resize the active interactive PTY |
 | `agend interrupt` | Send SIGINT (Ctrl+C) to the running command |
 | `agend ping` | Check connectivity to agentd |
 
-`exec` supports `--background` (returns task ID), `--interactive` (PTY mode for TUIs), `--timeout`, `--tail`, and `--head`.
+`exec` supports `--background` (returns task ID), `--interactive` (PTY mode for TUIs), `--timeout`, `--tail`, and `--head`. During an interactive call, terminal resize events are forwarded automatically (SIGWINCH on Unix and size polling on Windows).
 
 ### Files (direct gRPC)
 
@@ -172,6 +173,7 @@ The MCP server manages a **connection pool** -- each environment gets its own gR
 | `shell_exec` | Execute commands (supports timeout, interactive, background, head/tail truncation) |
 | `shell_provide_input` | Send text input to a waiting process (appends newline) |
 | `shell_send_raw` | Send raw bytes to PTY (vim keystrokes, REPL input, no newline) |
+| `shell_resize` | Resize the active interactive PTY |
 | `shell_interrupt` | Send SIGINT to interrupt the running command |
 | `shell_task_output` | Get output of a background task |
 | `shell_task_stop` | Stop a background task |

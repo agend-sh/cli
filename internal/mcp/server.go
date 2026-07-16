@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -398,6 +399,8 @@ func dispatchTool(ctx context.Context, client *agentgrpc.Client, name string, ar
 		return callInput(ctx, client, args)
 	case "shell_send_raw":
 		return callRawInput(ctx, client, args)
+	case "shell_resize":
+		return callResize(ctx, client, args)
 	case "shell_interrupt":
 		return callInterrupt(ctx, client)
 	case "shell_task_output":
@@ -509,6 +512,32 @@ func callRawInput(ctx context.Context, client *agentgrpc.Client, args map[string
 		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
 	}
 	return out, false
+}
+
+func callResize(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
+	columns, err := resizeDimensionArg(args, "columns")
+	if err != nil {
+		return err.Error(), true
+	}
+	rows, err := resizeDimensionArg(args, "rows")
+	if err != nil {
+		return err.Error(), true
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := client.Resize(callCtx, columns, rows); err != nil {
+		return fmt.Sprintf("resize failed: %v", err), true
+	}
+	return fmt.Sprintf("resized: %dx%d", columns, rows), false
+}
+
+func resizeDimensionArg(args map[string]any, key string) (uint32, error) {
+	dimension := numArg(args[key])
+	if math.IsNaN(dimension) || math.IsInf(dimension, 0) || dimension != math.Trunc(dimension) ||
+		dimension < 1 || dimension > float64(agentgrpc.MaxPTYDimension) {
+		return 0, fmt.Errorf("%s must be an integer between 1 and %d", key, agentgrpc.MaxPTYDimension)
+	}
+	return uint32(dimension), nil
 }
 
 func callInterrupt(ctx context.Context, client *agentgrpc.Client) (string, bool) {

@@ -98,6 +98,25 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 			},
 		},
 		{
+			"name":        "shell_resize",
+			"description": "Resize the active interactive PTY. Use this when the client viewport changes while driving a TUI or REPL.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment": envProp,
+					"columns": map[string]any{
+						"type": "integer", "minimum": 1, "maximum": 1000,
+						"description": "Terminal width in columns (1-1000)",
+					},
+					"rows": map[string]any{
+						"type": "integer", "minimum": 1, "maximum": 1000,
+						"description": "Terminal height in rows (1-1000)",
+					},
+				},
+				"required": []string{"environment", "columns", "rows"},
+			},
+		},
+		{
 			"name":        "shell_interrupt",
 			"description": "Send SIGINT (Ctrl+C) to interrupt the running command or close an interactive session.",
 			"inputSchema": map[string]any{
