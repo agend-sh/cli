@@ -199,6 +199,64 @@ func TestSaveEnvironmentEmptySecretPreservesSessionToken(t *testing.T) {
 	}
 }
 
+func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := SaveToken("opaque-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveEnvironment("env-active", "active:443", "active-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := SaveSessionTokenForEnvironment("env-other", "active-secret", "", "other-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("session token for a different environment was persisted")
+	}
+	envID, _, secret, session, err := LoadEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envID != "env-active" || secret != "active-secret" || session != "" {
+		t.Fatalf("active credentials changed: env=%q secret=%q session=%q", envID, secret, session)
+	}
+
+	saved, err = SaveSessionTokenForEnvironment("env-active", "active-secret", "", "active-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved {
+		t.Fatal("matching environment session token was not persisted")
+	}
+	_, _, secret, session, err = LoadEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != "" || session != "active-session" {
+		t.Fatalf("persisted credentials = secret %q session %q", secret, session)
+	}
+
+	if err := SaveEnvironment("env-active", "active:443", "newer-secret"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = SaveSessionTokenForEnvironment("env-active", "active-secret", "", "late-old-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("late session token replaced a newer one-time secret")
+	}
+	_, _, secret, session, err = LoadEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != "newer-secret" || session != "" {
+		t.Fatalf("newer credentials changed: secret %q session %q", secret, session)
+	}
+}
+
 func TestSaveAndLoadAPIURL(t *testing.T) {
 	setupHome(t)
 

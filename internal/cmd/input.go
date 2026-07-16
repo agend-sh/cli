@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -19,7 +18,7 @@ func newInputCmd() *cobra.Command {
 		Short: "Send text input to a process waiting for input (newline appended)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			var resp *pb.InputResponse
 			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.Input(ctx, &pb.InputRequest{
@@ -64,8 +63,10 @@ func newInterruptCmd() *cobra.Command {
 		Use:   "interrupt",
 		Short: "Send SIGINT to the active session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			ctx := cmd.Context()
+			// SIGINT is not idempotent: an ambiguous lost response may mean the
+			// signal was delivered, and replay could hit a subsequent session.
+			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Interrupt(ctx, &pb.InterruptRequest{})
 				if err != nil {
 					return fmt.Errorf("interrupt failed: %w", err)

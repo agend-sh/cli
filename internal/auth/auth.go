@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,12 @@ type store struct {
 }
 
 const storeVersion = 2
+
+// storeMu serializes credential read-modify-write operations within a CLI/MCP
+// process. The file replacement itself is atomic, but without this lock two
+// concurrent environment handshakes can both read the same old store and let
+// the later rename silently discard the earlier update.
+var storeMu sync.Mutex
 
 func configPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -160,6 +167,8 @@ func activeAccount(s *store) *account {
 // mutateActive applies fn to the active account and persists. No-op if there
 // is no active account.
 func mutateActive(fn func(*account)) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return err
@@ -181,6 +190,8 @@ func SaveToken(token string) error {
 	if token == "" {
 		return errors.New("empty token")
 	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		s = &store{Version: storeVersion, Accounts: map[string]*account{}}
@@ -215,6 +226,8 @@ func LoadToken() (string, error) {
 // RemoveToken logs out the active account: it is removed and, if other accounts
 // remain, one becomes active. The file is deleted only when no accounts remain.
 func RemoveToken() error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return nil
@@ -329,6 +342,37 @@ func SaveSessionToken(token string) error {
 	})
 }
 
+// SaveSessionTokenForEnvironment atomically replaces the credential that a
+// client actually used, and only when envID is still the active record. MCP can
+// hold multiple environments and credentials can rotate while calls overlap;
+// a late handshake must not overwrite either environment's newer credential.
+// The bool reports whether the compare-and-swap matched and was saved.
+func SaveSessionTokenForEnvironment(envID, expectedSecret, expectedSessionToken, token string) (bool, error) {
+	if envID == "" {
+		return false, errors.New("empty environment ID")
+	}
+	if token == "" {
+		return false, errors.New("empty session token")
+	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	s, err := loadStore()
+	if err != nil {
+		return false, err
+	}
+	a := activeAccount(s)
+	if a == nil || a.EnvID != envID || a.Secret != expectedSecret || a.SessionToken != expectedSessionToken {
+		return false, nil
+	}
+	a.SessionToken = token
+	a.Secret = ""
+	if err := saveStore(s); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ClearSessionToken drops a stored gRPC session token without touching
 // the rest of the environment record. Used by the retry path when reauth
 // rotates the one-time secret — the old session token is no longer valid.
@@ -349,6 +393,8 @@ func ClearEnvironment() error {
 // SaveAPIURL stores a custom API base URL (for dev/testing). It is global
 // (not per-account).
 func SaveAPIURL(url string) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		s = &store{Version: storeVersion, Accounts: map[string]*account{}}

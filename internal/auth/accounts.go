@@ -44,6 +44,8 @@ func ActiveEmail() string {
 // SwitchAccount makes email the active account. Errors if no such account is
 // stored (the caller should log in to it first).
 func SwitchAccount(email string) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return err
@@ -58,6 +60,8 @@ func SwitchAccount(email string) error {
 // RemoveAccount deletes a stored account. If it was active, another remaining
 // account (if any) becomes active.
 func RemoveAccount(email string) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return err
@@ -78,6 +82,8 @@ func RemoveAccount(email string) error {
 
 // RemoveAllAccounts clears every stored account (logout --all).
 func RemoveAllAccounts() error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s := &store{Version: storeVersion, Accounts: map[string]*account{}}
 	return saveStore(s)
 }

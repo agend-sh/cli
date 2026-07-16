@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -151,11 +152,7 @@ func TestConcurrentAuthFailuresShareOneRotationAndHandshake(t *testing.T) {
 		endpoint: listener.Addr().String(), sessionToken: "stale-session",
 		apiClient: api.New(controlPlane.URL, "control-token"),
 	}
-	t.Cleanup(func() {
-		conn.mu.Lock()
-		conn.close()
-		conn.mu.Unlock()
-	})
+	t.Cleanup(conn.disconnect)
 
 	start := make(chan struct{})
 	results := make(chan struct {
@@ -245,11 +242,7 @@ func TestLateOldGenerationFailureDoesNotCloseRecoveredClient(t *testing.T) {
 		endpoint: listener.Addr().String(), sessionToken: "stale-session",
 		apiClient: api.New(controlPlane.URL, "control-token"),
 	}
-	t.Cleanup(func() {
-		conn.mu.Lock()
-		conn.close()
-		conn.mu.Unlock()
-	})
+	t.Cleanup(conn.disconnect)
 
 	lateEntered := make(chan struct{})
 	replacementUsed := make(chan struct{})
@@ -335,5 +328,181 @@ func TestRecoveryGateAndBackoffHonorCancellation(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("cancelled backoff took %s", elapsed)
+	}
+}
+
+func TestCancelledCallDoesNotWaitForRecoveryStateMutex(t *testing.T) {
+	conn := &EnvConn{}
+	if err := conn.acquireRecovery(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	defer func() {
+		conn.mu.Unlock()
+		conn.releaseRecovery()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	executeDone := make(chan struct {
+		text string
+		err  bool
+	}, 1)
+	go func() {
+		text, isErr := conn.Execute(ctx, false, func(*agentgrpc.Client) (string, bool) {
+			panic("cancelled call dispatched")
+		})
+		executeDone <- struct {
+			text string
+			err  bool
+		}{text: text, err: isErr}
+	}()
+	select {
+	case result := <-executeDone:
+		if !result.err || !strings.Contains(result.text, context.Canceled.Error()) {
+			t.Fatalf("Execute = %q, isError=%v; want context cancellation", result.text, result.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cancelled Execute blocked on recovery's state mutex")
+	}
+
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, _, _, _, _, err := conn.invokeCurrent(ctx, func(*agentgrpc.Client) (string, bool) {
+			panic("cancelled invocation dispatched")
+		})
+		invokeDone <- err
+	}()
+	select {
+	case err := <-invokeDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("invokeCurrent = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cancelled invocation blocked on recovery's state mutex")
+	}
+}
+
+func TestCancelledCallLeavesWhileRecoveryHTTPIsBlocked(t *testing.T) {
+	entered := make(chan struct{})
+	var enterOnce sync.Once
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enterOnce.Do(func() { close(entered) })
+		<-r.Context().Done()
+	}))
+	defer controlPlane.Close()
+
+	conn := &EnvConn{
+		envID:     "env-slow-recovery",
+		state:     StateDisconnected,
+		apiClient: api.New(controlPlane.URL, "control-token"),
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- conn.EnsureConnected(firstCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		cancelFirst()
+		t.Fatal("recovery did not enter the control-plane request")
+	}
+
+	cancelledCtx, cancelSecond := context.WithCancel(context.Background())
+	cancelSecond()
+	started := time.Now()
+	text, isErr := conn.Execute(cancelledCtx, false, func(*agentgrpc.Client) (string, bool) {
+		panic("cancelled call dispatched")
+	})
+	if !isErr || !strings.Contains(text, context.Canceled.Error()) {
+		cancelFirst()
+		t.Fatalf("Execute = %q, isError=%v; want context cancellation", text, isErr)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		cancelFirst()
+		t.Fatalf("cancelled call waited %s behind recovery HTTP", elapsed)
+	}
+
+	cancelFirst()
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked recovery error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked recovery ignored cancellation")
+	}
+}
+
+func TestAmbiguousReauthResponseIsFencedOncePerCredentialGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	testAgent := newAuthRecoveryTestServer()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcServer := ggrpc.NewServer(ggrpc.UnaryInterceptor(testAgent.interceptor))
+	pb.RegisterAgentServiceServer(grpcServer, testAgent)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	var reauthCalls atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-ambiguous/reauth":
+			reauthCalls.Add(1)
+			// An HTTP failure is ambiguous with respect to the control-plane
+			// mutation: it may have committed before this response was produced.
+			http.Error(w, `{"error":"response lost after commit"}`, http.StatusBadGateway)
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/environments/env-ambiguous":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"env_id": "env-ambiguous", "state": "running", "endpoint": listener.Addr().String(),
+			})
+		default:
+			http.Error(w, "unexpected control-plane request", http.StatusNotFound)
+		}
+	}))
+	defer controlPlane.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	staleClient, err := agentgrpc.Dial(ctx, listener.Addr().String(), "", "stale-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &EnvConn{
+		envID: "env-ambiguous", state: StateConnected, client: staleClient, generation: 1,
+		endpoint: listener.Addr().String(), sessionToken: "stale-session",
+		apiClient: api.New(controlPlane.URL, "control-token"),
+	}
+	t.Cleanup(conn.disconnect)
+
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, isErr := conn.Execute(ctx, false, func(client *agentgrpc.Client) (string, bool) {
+				_, callErr := client.Agent.Exec(ctx, &pb.ExecRequest{Command: "true"})
+				if callErr != nil {
+					return fmt.Sprintf("exec failed: %v", callErr), true
+				}
+				return "unexpected success", false
+			})
+			results <- isErr
+		}()
+	}
+	close(start)
+	for range 2 {
+		if !<-results {
+			t.Fatal("stale credential unexpectedly succeeded")
+		}
+	}
+	if calls := reauthCalls.Load(); calls != 1 {
+		t.Fatalf("reauth calls = %d, want exactly 1 for the failed credential generation", calls)
 	}
 }
