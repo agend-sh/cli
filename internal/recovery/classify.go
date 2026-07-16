@@ -124,6 +124,7 @@ var idempotentTools = map[string]bool{
 	"port_list":         true,
 	"file_download":     true,
 	"shell_task_output": true,
+	"shell_resize":      true,
 	"reload_config":     true,
 }
 

@@ -64,6 +64,7 @@ func NewRoot(version string) *cobra.Command {
 	root.AddCommand(newTaskOutputCmd())
 	root.AddCommand(newTaskStopCmd())
 	root.AddCommand(newInputCmd())
+	root.AddCommand(newResizeCmd())
 	root.AddCommand(newInterruptCmd())
 	root.AddCommand(newEnvCmd())
 	root.AddCommand(newTeamCmd())

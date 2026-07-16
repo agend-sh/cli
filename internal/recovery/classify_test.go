@@ -59,7 +59,7 @@ func TestClassifyText_WindowsSocketErrors(t *testing.T) {
 
 func TestIsIdempotent(t *testing.T) {
 	// Read-only ops are retryable.
-	for _, tool := range []string{"port_list", "file_download", "shell_task_output", "env_status"} {
+	for _, tool := range []string{"port_list", "file_download", "shell_task_output", "shell_resize", "env_status"} {
 		if !IsIdempotent(tool) {
 			t.Errorf("%s should be idempotent", tool)
 		}

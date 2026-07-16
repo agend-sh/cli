@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -25,9 +26,22 @@ func newExecCmd() *cobra.Command {
 		Short: "Execute a command in the remote environment",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			var resp *pb.ExecResponse
 			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+				if interactive && terminalResizeAvailable() {
+					// Establish the session token before Exec and Resize begin in
+					// parallel. Otherwise both RPCs could race using the one-time
+					// secret, which is deliberately consumed by the first request.
+					pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					_, err := client.Agent.Ping(pingCtx, &pb.PingRequest{})
+					cancel()
+					if err != nil {
+						return fmt.Errorf("prepare interactive terminal: %w", err)
+					}
+					stopResize := startTerminalResizeForwarding(ctx, client, cmd.ErrOrStderr())
+					defer stopResize()
+				}
 				r, err := client.Agent.Exec(ctx, &pb.ExecRequest{
 					Command:         strings.Join(args, " "),
 					TimeoutMs:       timeoutMs,

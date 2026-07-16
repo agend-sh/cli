@@ -5,17 +5,19 @@ package agentd.v1;
 option go_package = "github.com/agend-sh/daemon/proto/agentd/v1;agentdv1";
 
 // AgentService is the gRPC API exposed by the daemon inside each microVM.
-// Clients send commands; the daemon executes them inside the box and returns
-// structured results, including support for long-running and interactive
-// applications.
+// It mirrors the claude-shell-mcp MCP tool interface — the client sends
+// commands and gets results back. All PTY orchestration, INPUTWAIT detection,
+// and interactive app handling happens inside the daemon.
 service AgentService {
 
   // --- Shell ---
 
-  // Execute a command. Returns stdout/stderr for completed commands,
-  // or status "awaiting_input" if the process is waiting for input. The
-  // daemon handles execution details, including interactive applications,
-  // internally.
+  // Execute a command. Returns stdout/stderr for completed commands.
+  // With interactive=true the daemon runs the command under a PTY and can
+  // return status "awaiting_input" when the process blocks for input (PTY,
+  // output markers, and TIOCPKT_INPUTWAIT handled internally). A non-interactive
+  // exec has no stdin: a command that waits for input runs to the timeout and
+  // returns status "timeout" — re-run with interactive=true to drive it.
   rpc Exec(ExecRequest) returns (ExecResponse);
 
   // Send text input to a process waiting for input (password, confirmation).
@@ -25,6 +27,10 @@ service AgentService {
   // Send raw bytes to an interactive program (vim keystrokes, REPL code).
   // No newline appended — sends exactly what you provide.
   rpc RawInput(RawInputRequest) returns (RawInputResponse);
+
+  // Resize the active interactive PTY. This is independent of a blocked PTY
+  // read so terminal resize events remain responsive.
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
 
   // Send SIGINT (Ctrl+C) to interrupt a running command.
   rpc Interrupt(InterruptRequest) returns (InterruptResponse);
@@ -68,6 +74,11 @@ service AgentService {
   // --- Health ---
 
   rpc Ping(PingRequest) returns (PingResponse);
+
+  // --- Host control (node-agent only; x-control-secret auth) ---
+
+  rpc PrepareSleep(PrepareSleepRequest) returns (PrepareSleepResponse);
+  rpc CompleteWake(CompleteWakeRequest) returns (CompleteWakeResponse);
 }
 
 // =============================================================================
@@ -130,6 +141,13 @@ message RawInputResponse {
   string screen = 2;              // current terminal screen content
   int32 exit_code = 3;            // set when status = "completed"
 }
+
+message ResizeRequest {
+  uint32 columns = 1;
+  uint32 rows = 2;
+}
+
+message ResizeResponse {}
 
 message InterruptRequest {}
 
@@ -273,11 +291,36 @@ message ExposedPort {
 // Health
 // =============================================================================
 
+// PrepareSleep / CompleteWake are host-control RPCs (node-agent only, over
+// the TAP link). They authenticate via x-control-secret metadata matched
+// against the MMDS control_secret — NOT the user session token — because the
+// tunnel exposes this port to the user's CLI and freezing the filesystem must
+// not be user-triggerable. PrepareSleep syncs + freezes the data filesystem
+// so the sleep snapshot captures a fully-quiesced disk (no in-flight I/O to
+// wedge the mount table on restore, and a clean image for cold wakes).
+// CompleteWake thaws after restore; an in-guest watchdog thaws regardless if
+// the host never calls it.
+message PrepareSleepRequest {}
+
+message PrepareSleepResponse {
+  bool frozen = 1;
+  string detail = 2;
+}
+
+message CompleteWakeRequest {}
+
+message CompleteWakeResponse {
+  bool thawed = 1;
+  string detail = 2;
+}
+
 message PingRequest {}
 
 message PingResponse {
   string version = 1;
   uint64 uptime_seconds = 2;
-  // Unix ms of the last authenticated client call, 0 if none since boot.
+  // Unix ms of the last RPC that carried valid client credentials (session
+  // token or one-time secret). 0 = no authenticated client since boot.
+  // Unauthenticated pings (node-agent health checks) do not move this.
   int64 last_client_activity_unix_ms = 3;
 }
