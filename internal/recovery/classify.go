@@ -128,6 +128,14 @@ func IsUnauthenticatedText(msg string) bool {
 	return remainder == "unauthenticated" || strings.HasPrefix(remainder, "unauthenticated ")
 }
 
+// IsUnauthenticated reports whether err carries the typed gRPC status that
+// proves agentd's authentication interceptor rejected the RPC before its
+// handler ran. Text that merely mentions a 401 or an invalid token is not
+// sufficient proof for transparently replaying a side-effecting operation.
+func IsUnauthenticated(err error) bool {
+	return status.Code(err) == codes.Unauthenticated
+}
+
 // nonIdempotentExempt is the read-only / idempotent tool allowlist. Everything
 // not listed is treated as side-effecting and must NOT be transparently
 // re-executed after it may have already run (e.g. a "connection reset" that

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -196,5 +197,143 @@ func TestConcurrentAuthFailuresShareOneRotationAndHandshake(t *testing.T) {
 	if staleCalls != 2 || secretCalls != 1 || execCalls != 2 {
 		t.Fatalf("agent calls: stale=%d rotated_secret=%d rotated_exec=%d; want 2,1,2",
 			staleCalls, secretCalls, execCalls)
+	}
+}
+
+func TestLateOldGenerationFailureDoesNotCloseRecoveredClient(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	testAgent := newAuthRecoveryTestServer()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcServer := ggrpc.NewServer(ggrpc.UnaryInterceptor(testAgent.interceptor))
+	pb.RegisterAgentServiceServer(grpcServer, testAgent)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	var reauthCalls atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-fenced/reauth":
+			reauthCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"env_id": "env-fenced", "secret": "rotated-secret",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/environments/env-fenced":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"env_id": "env-fenced", "state": "running", "endpoint": listener.Addr().String(),
+			})
+		default:
+			http.Error(w, "unexpected control-plane request", http.StatusNotFound)
+		}
+	}))
+	defer controlPlane.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	staleClient, err := agentgrpc.Dial(ctx, listener.Addr().String(), "", "stale-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &EnvConn{
+		envID: "env-fenced", state: StateConnected, client: staleClient, generation: 1,
+		endpoint: listener.Addr().String(), sessionToken: "stale-session",
+		apiClient: api.New(controlPlane.URL, "control-token"),
+	}
+	t.Cleanup(func() {
+		conn.mu.Lock()
+		conn.close()
+		conn.mu.Unlock()
+	})
+
+	lateEntered := make(chan struct{})
+	replacementUsed := make(chan struct{})
+	lateResult := make(chan struct {
+		text string
+		err  bool
+	}, 1)
+	go func() {
+		text, isErr := conn.Execute(ctx, false, func(client *agentgrpc.Client) (string, bool) {
+			if client != staleClient {
+				return "late mutation unexpectedly replayed", true
+			}
+			close(lateEntered)
+			select {
+			case <-replacementUsed:
+				return "exec failed: rpc error: code = Unavailable desc = old transport closed", true
+			case <-ctx.Done():
+				return ctx.Err().Error(), true
+			}
+		})
+		lateResult <- struct {
+			text string
+			err  bool
+		}{text: text, err: isErr}
+	}()
+	select {
+	case <-lateEntered:
+	case <-ctx.Done():
+		t.Fatal("late old-generation call did not start")
+	}
+
+	authText, authErr := conn.Execute(ctx, false, func(client *agentgrpc.Client) (string, bool) {
+		if client == staleClient {
+			return "exec failed: rpc error: code = Unauthenticated desc = invalid session token", true
+		}
+		close(replacementUsed)
+		return "ok", false
+	})
+	if authErr || authText != "[reconnected] ok" {
+		t.Fatalf("auth recovery = %q, isError=%v", authText, authErr)
+	}
+
+	late := <-lateResult
+	if !late.err || late.text != "exec failed: rpc error: code = Unavailable desc = old transport closed" {
+		t.Fatalf("late result = %q, isError=%v", late.text, late.err)
+	}
+	if reauthCalls.Load() != 1 {
+		t.Fatalf("reauth calls = %d, want 1", reauthCalls.Load())
+	}
+
+	conn.mu.Lock()
+	current := conn.client
+	state := conn.state
+	conn.mu.Unlock()
+	if current == nil || current == staleClient || state != StateConnected {
+		t.Fatalf("replacement was lost: client=%p stale=%p state=%v", current, staleClient, state)
+	}
+	if _, err := current.Agent.Exec(ctx, &pb.ExecRequest{Command: "still-connected"}); err != nil {
+		t.Fatalf("replacement client was closed by late failure: %v", err)
+	}
+}
+
+func TestRecoveryGateAndBackoffHonorCancellation(t *testing.T) {
+	conn := &EnvConn{}
+	if err := conn.acquireRecovery(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.releaseRecovery()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	if err := conn.acquireRecovery(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("recovery gate error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cancelled recovery gate wait took %s", elapsed)
+	}
+
+	started = time.Now()
+	if err := waitForContext(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("backoff error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cancelled backoff took %s", elapsed)
 	}
 }

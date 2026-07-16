@@ -25,7 +25,8 @@ type Client struct {
 	Agent pb.AgentServiceClient
 
 	mu              sync.Mutex
-	authMu          sync.Mutex
+	authGateOnce    sync.Once
+	authGate        chan struct{}
 	secret          string             // one-time secret (cleared after handshake)
 	token           string             // session token (set after handshake)
 	OnTokenReceived func(token string) // called when session token is received
@@ -199,8 +200,10 @@ func (c *Client) ensureAuthenticated(ctx context.Context, cc *grpc.ClientConn, i
 		return nil
 	}
 
-	c.authMu.Lock()
-	defer c.authMu.Unlock()
+	if err := c.acquireAuth(ctx); err != nil {
+		return err
+	}
+	defer c.releaseAuth()
 
 	// Another caller may have completed the handshake while this one waited.
 	c.mu.Lock()
@@ -211,7 +214,9 @@ func (c *Client) ensureAuthenticated(ctx context.Context, cc *grpc.ClientConn, i
 	secret := c.secret
 	c.mu.Unlock()
 
-	pingCtx := metadata.AppendToOutgoingContext(ctx, "x-one-time-secret", secret)
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	pingCtx = metadata.AppendToOutgoingContext(pingCtx, "x-one-time-secret", secret)
 	var trailer metadata.MD
 	var response pb.PingResponse
 	err := invoker(
@@ -237,6 +242,23 @@ func (c *Client) ensureAuthenticated(ctx context.Context, cc *grpc.ClientConn, i
 		return err
 	}
 	return status.Error(codes.Unauthenticated, "one-time secret was not accepted")
+}
+
+func (c *Client) acquireAuth(ctx context.Context) error {
+	c.authGateOnce.Do(func() {
+		c.authGate = make(chan struct{}, 1)
+		c.authGate <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.authGate:
+		return nil
+	}
+}
+
+func (c *Client) releaseAuth() {
+	c.authGate <- struct{}{}
 }
 
 func (c *Client) acceptSessionToken(token string) {

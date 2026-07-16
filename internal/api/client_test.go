@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestValidateBaseURL(t *testing.T) {
@@ -138,5 +140,39 @@ func TestControlPlaneV2DoesNotFallBack(t *testing.T) {
 	}
 	if want := []string{"/v2/environments"}; !reflect.DeepEqual(requests, want) {
 		t.Fatalf("requests = %v, want exactly %v", requests, want)
+	}
+}
+
+func TestReauthEnvironmentContextCancelsInFlightRequest(t *testing.T) {
+	entered := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := New(server.URL, "token").ReauthEnvironmentContext(ctx, "env-1")
+		result <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reauth request did not reach control plane")
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reauth cancellation error = %v, want context.Canceled", err)
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("reauth cancellation took %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reauth request ignored context cancellation")
 	}
 }
