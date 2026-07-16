@@ -90,11 +90,13 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			if staleBudget == 0 && transientBudget == 0 {
 				return err
 			}
-			if err := refreshEndpoint(); err != nil {
+			if err := refreshEndpoint(ctx); err != nil {
 				log.Printf("refresh endpoint failed: %v", err)
 			}
 			staleBudget--
-			time.Sleep(backoff(attempt))
+			if err := waitForRetry(ctx, backoff(attempt)); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -106,14 +108,15 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 
 		lastErr = err
 		cat := classifyErr(err)
+		retrySafe := mutationRetrySafe(idempotent, err)
 
 		// A non-idempotent op that reached the daemon may already have run;
 		// don't loop back and re-execute it. Auth is the exception (an
 		// Unauthenticated reply means it was rejected before running).
-		if !idempotent && cat != errFatal && cat != errAuth {
+		if cat != errFatal && !retrySafe {
 			// Refresh the endpoint so the *next* CLI invocation is healthy,
 			// then surface the original error.
-			if rerr := refreshEndpoint(); rerr != nil {
+			if rerr := refreshEndpoint(ctx); rerr != nil {
 				log.Printf("refresh endpoint failed: %v", rerr)
 			}
 			return err
@@ -124,6 +127,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			return err
 
 		case errAuth:
+			if !retrySafe {
+				return err
+			}
 			if auth.TokenExpired(storedToken) {
 				return errSessionExpired
 			}
@@ -131,9 +137,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 				return err
 			}
 			authBudget--
-			if rerr := reauthEnvironment(); rerr != nil {
+			if rerr := reauthEnvironment(ctx); rerr != nil {
 				// Reauth failed — try a full re-resolve instead.
-				if frerr := refreshEndpoint(); frerr != nil {
+				if frerr := refreshEndpoint(ctx); frerr != nil {
 					return err
 				}
 			}
@@ -147,19 +153,23 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 				return err
 			}
 			staleBudget--
-			if rerr := refreshEndpoint(); rerr != nil {
+			if rerr := refreshEndpoint(ctx); rerr != nil {
 				log.Printf("refresh endpoint failed: %v", rerr)
 			}
 			// Cloudflare quick-tunnel DNS propagation can take several
 			// seconds; back off progressively.
-			time.Sleep(backoff(attempt))
+			if err := waitForRetry(ctx, backoff(attempt)); err != nil {
+				return err
+			}
 
 		case errTransient:
 			if transientBudget == 0 {
 				return err
 			}
 			transientBudget--
-			time.Sleep(backoff(attempt))
+			if err := waitForRetry(ctx, backoff(attempt)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -167,6 +177,14 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 		return fmt.Errorf("exhausted reconnect attempts: %w", lastErr)
 	}
 	return errors.New("exhausted reconnect attempts")
+}
+
+// mutationRetrySafe is deliberately stricter than auth classification. An
+// idempotent call can always be retried, but a mutation can only be replayed
+// when a typed gRPC Unauthenticated status proves agentd rejected it in the
+// auth interceptor before invoking the handler.
+func mutationRetrySafe(idempotent bool, err error) bool {
+	return idempotent || recovery.IsUnauthenticated(err)
 }
 
 // backoff returns a simple linear-ish backoff duration for retry attempt n.
@@ -185,10 +203,21 @@ func backoff(attempt int) time.Duration {
 	}
 }
 
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // refreshEndpoint fetches the current endpoint for the stored env from
 // the control plane and persists it. Preserves the existing secret
 // because endpoint rotation alone does not invalidate the gRPC session.
-func refreshEndpoint() error {
+func refreshEndpoint(ctx context.Context) error {
 	envID, _, secret, _, err := auth.LoadEnvironment()
 	if err != nil || envID == "" {
 		return fmt.Errorf("no active environment in credentials")
@@ -197,7 +226,7 @@ func refreshEndpoint() error {
 	if err != nil {
 		return err
 	}
-	env, err := api.GetEnvironment(envID)
+	env, err := api.GetEnvironmentContext(ctx, envID)
 	if err != nil {
 		return err
 	}
@@ -210,7 +239,7 @@ func refreshEndpoint() error {
 // reauthEnvironment rotates the one-time secret via the control plane
 // and persists it. Also clears any cached session token, since the new
 // secret invalidates all previous sessions.
-func reauthEnvironment() error {
+func reauthEnvironment(ctx context.Context) error {
 	envID, endpoint, _, _, err := auth.LoadEnvironment()
 	if err != nil || envID == "" {
 		return fmt.Errorf("no active environment in credentials")
@@ -219,9 +248,15 @@ func reauthEnvironment() error {
 	if err != nil {
 		return err
 	}
-	resp, err := api.ReauthEnvironment(envID)
+	resp, err := api.ReauthEnvironmentContext(ctx, envID)
 	if err != nil {
 		return err
+	}
+	if resp.EnvID != envID {
+		return fmt.Errorf("reauth returned environment %q, expected %q", resp.EnvID, envID)
+	}
+	if resp.Secret == "" {
+		return fmt.Errorf("reauth returned an empty one-time secret")
 	}
 	if err := auth.SaveEnvironment(envID, endpoint, resp.Secret); err != nil {
 		return err

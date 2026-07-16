@@ -29,15 +29,19 @@ const (
 // via WebSocket/gRPC, retrying transient errors, and reconnecting
 // when endpoints go stale.
 type EnvConn struct {
-	mu             sync.Mutex
-	authRecoveryMu sync.Mutex
-	envID          string
-	state          ConnState
-	client         *agentgrpc.Client
-	generation     uint64
-	endpoint       string
-	secret         string // one-time secret (cleared after first auth → session token)
-	sessionToken   string // session token (set after first auth, reused on reconnect)
+	mu               sync.Mutex
+	recoveryGateOnce sync.Once
+	recoveryGate     chan struct{}
+	envID            string
+	state            ConnState
+	client           *agentgrpc.Client
+	generation       uint64
+	authGeneration   uint64
+	inflight         map[*agentgrpc.Client]uint64
+	retired          map[*agentgrpc.Client]struct{}
+	endpoint         string
+	secret           string // one-time secret (cleared after first auth → session token)
+	sessionToken     string // session token (set after first auth, reused on reconnect)
 
 	apiClient *api.Client
 	lastPing  time.Time
@@ -123,8 +127,20 @@ func (p *ConnPool) Reset(newAPI *api.Client) {
 // Called before every tool call.
 func (c *EnvConn) EnsureConnected(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.state == StateConnected && c.client != nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
 
+	if err := c.acquireRecovery(ctx); err != nil {
+		return err
+	}
+	defer c.releaseRecovery()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Another caller may have connected while this one waited for the gate.
 	if c.state == StateConnected && c.client != nil {
 		return nil
 	}
@@ -144,12 +160,10 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 		return fmt.Sprintf("connection failed: %v", err), true
 	}
 
-	c.mu.Lock()
-	client := c.client
-	generation := c.generation
-	c.mu.Unlock()
-
-	text, isErr := fn(client)
+	text, isErr, client, generation, authGeneration, err := c.invokeCurrent(fn)
+	if err != nil {
+		return fmt.Sprintf("connection failed: %v", err), true
+	}
 	if !isErr {
 		return text, false
 	}
@@ -163,10 +177,7 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 	// was rejected before executing, so reauth + one retry is safe.
 	if !idempotent && cat != ErrFatal && !safelyRejected {
 		log.Printf("[env:%s] non-idempotent op failed (%v); reconnecting for next call, not retrying", c.envID, cat)
-		c.mu.Lock()
-		c.close()
-		_ = c.resolveAndConnect(ctx)
-		c.mu.Unlock()
+		_, _, _ = c.reconnectAfterFailure(ctx, client, generation)
 		return text, true
 	}
 
@@ -178,11 +189,14 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 		if !idempotent && !safelyRejected {
 			return text, true
 		}
-		client, err := c.recoverAuthentication(ctx, client, generation)
+		_, err := c.recoverAuthentication(ctx, authGeneration)
 		if err != nil {
 			return fmt.Sprintf("reconnect failed: %v (original: %s)", err, text), true
 		}
-		retryText, retryErr := fn(client)
+		retryText, retryErr, _, _, _, invokeErr := c.invokeCurrent(fn)
+		if invokeErr != nil {
+			return fmt.Sprintf("reconnect failed: %v (original: %s)", invokeErr, text), true
+		}
 		if !retryErr {
 			return "[reconnected] " + retryText, false
 		}
@@ -193,8 +207,14 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 		log.Printf("[env:%s] transient error, retrying...", c.envID)
 		for attempt := 1; attempt <= 3; attempt++ {
 			wait := time.Duration(attempt) * time.Second
-			time.Sleep(wait)
-			retryText, retryErr := fn(client)
+			if err := waitForContext(ctx, wait); err != nil {
+				return err.Error(), true
+			}
+			retryText, retryErr, retryClient, retryGeneration, _, invokeErr := c.invokeCurrent(fn)
+			if invokeErr != nil {
+				return fmt.Sprintf("retry failed: %v", invokeErr), true
+			}
+			client, generation = retryClient, retryGeneration
 			if !retryErr {
 				return retryText, false
 			}
@@ -209,21 +229,17 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 
 	case ErrStaleEndpoint:
 		log.Printf("[env:%s] stale endpoint, re-resolving and reconnecting...", c.envID)
-		c.mu.Lock()
-		c.close()
-		err := c.resolveAndConnect(ctx)
-		c.mu.Unlock()
+		reconnectedClient, reconnectedGeneration, err := c.reconnectAfterFailure(ctx, client, generation)
 		if err != nil {
 			return fmt.Sprintf("reconnect failed: %v (original: %s)", err, text), true
 		}
+		client = reconnectedClient
+		generation = reconnectedGeneration
 
 		// Retry with backoff while the tunnel warms up. A freshly-created
 		// Cloudflare quick tunnel can take up to ~60s to start routing, so the
 		// total window here covers that (capped per-attempt wait keeps the
 		// cadence sane): 3+6+9+10+10+10+10 ≈ 58s across 7 attempts.
-		c.mu.Lock()
-		client = c.client
-		c.mu.Unlock()
 		const maxAttempts = 7
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			wait := time.Duration(attempt*3) * time.Second
@@ -231,8 +247,14 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 				wait = 10 * time.Second
 			}
 			log.Printf("[env:%s] waiting %s for tunnel (attempt %d/%d)...", c.envID, wait, attempt, maxAttempts)
-			time.Sleep(wait)
-			retryText, retryErr := fn(client)
+			if err := waitForContext(ctx, wait); err != nil {
+				return err.Error(), true
+			}
+			retryText, retryErr, retryClient, retryGeneration, _, invokeErr := c.invokeCurrent(fn)
+			if invokeErr != nil {
+				return fmt.Sprintf("retry failed: %v", invokeErr), true
+			}
+			client, generation = retryClient, retryGeneration
 			if !retryErr {
 				return "[reconnected] " + retryText, false
 			}
@@ -244,34 +266,133 @@ func (c *EnvConn) Execute(ctx context.Context, idempotent bool, fn func(*agentgr
 	return text, true
 }
 
-// recoverAuthentication rotates credentials at most once for all callers that
-// failed against the same published client generation. authRecoveryMu spans
-// the control-plane call and reconnect; peers then observe the replacement
-// generation and reuse it instead of rotating again underneath one another.
-func (c *EnvConn) recoverAuthentication(
+// invokeCurrent borrows the currently published client for the duration of a
+// tool RPC. Connection recovery retires a borrowed client instead of closing
+// it immediately, allowing concurrent RPCs to receive the daemon's definitive
+// status rather than an ambiguous local "connection is closing" error.
+func (c *EnvConn) invokeCurrent(
+	fn func(*agentgrpc.Client) (string, bool),
+) (text string, isErr bool, client *agentgrpc.Client, generation, authGeneration uint64, err error) {
+	c.mu.Lock()
+	if c.state != StateConnected || c.client == nil {
+		c.mu.Unlock()
+		return "", false, nil, 0, 0, fmt.Errorf("environment is not connected")
+	}
+	client = c.client
+	generation = c.generation
+	authGeneration = c.authGeneration
+	if c.inflight == nil {
+		c.inflight = make(map[*agentgrpc.Client]uint64)
+	}
+	c.inflight[client]++
+	c.mu.Unlock()
+
+	defer c.releaseClient(client)
+	text, isErr = fn(client)
+	return text, isErr, client, generation, authGeneration, nil
+}
+
+func (c *EnvConn) releaseClient(client *agentgrpc.Client) {
+	var closeClient bool
+	c.mu.Lock()
+	count := c.inflight[client]
+	if count <= 1 {
+		delete(c.inflight, client)
+		if _, ok := c.retired[client]; ok {
+			delete(c.retired, client)
+			closeClient = true
+		}
+	} else {
+		c.inflight[client] = count - 1
+	}
+	c.mu.Unlock()
+	if closeClient {
+		_ = client.Close()
+	}
+}
+
+// acquireRecovery serializes connection replacement while allowing a cancelled
+// MCP call to stop waiting immediately. A sync.Mutex cannot be selected with a
+// context, which previously left cancelled peers waiting behind a 30-second
+// control-plane request.
+func (c *EnvConn) acquireRecovery(ctx context.Context) error {
+	c.recoveryGateOnce.Do(func() {
+		c.recoveryGate = make(chan struct{}, 1)
+		c.recoveryGate <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.recoveryGate:
+		return nil
+	}
+}
+
+func (c *EnvConn) releaseRecovery() {
+	c.recoveryGate <- struct{}{}
+}
+
+// reconnectAfterFailure replaces failedClient only if it is still the
+// published generation. If another recovery already installed a replacement,
+// a late result from the old client reuses it instead of tearing it down.
+func (c *EnvConn) reconnectAfterFailure(
 	ctx context.Context,
 	failedClient *agentgrpc.Client,
 	failedGeneration uint64,
-) (*agentgrpc.Client, error) {
-	c.authRecoveryMu.Lock()
-	defer c.authRecoveryMu.Unlock()
+) (*agentgrpc.Client, uint64, error) {
+	if err := c.acquireRecovery(ctx); err != nil {
+		return nil, 0, err
+	}
+	defer c.releaseRecovery()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.client != failedClient || c.generation != failedGeneration {
 		if c.state == StateConnected && c.client != nil {
+			return c.client, c.generation, nil
+		}
+		return nil, 0, fmt.Errorf("environment connection changed during recovery")
+	}
+	c.close()
+	if err := c.resolveAndConnect(ctx); err != nil {
+		return nil, 0, err
+	}
+	return c.client, c.generation, nil
+}
+
+// recoverAuthentication rotates credentials at most once for all callers that
+// failed against the same credential generation. The separate auth generation
+// matters because an endpoint-only reconnect can change the client generation
+// without repairing the invalid credential that triggered this recovery.
+func (c *EnvConn) recoverAuthentication(
+	ctx context.Context,
+	failedAuthGeneration uint64,
+) (*agentgrpc.Client, error) {
+	if err := c.acquireRecovery(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseRecovery()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.authGeneration != failedAuthGeneration {
+		if c.state == StateConnected && c.client != nil {
 			return c.client, nil
 		}
-		return nil, fmt.Errorf("environment connection changed during authentication recovery")
+		if err := c.resolveAndConnect(ctx); err != nil {
+			return nil, err
+		}
+		return c.client, nil
 	}
 
 	log.Printf("[env:%s] auth error, attempting reauth...", c.envID)
-	reauthResp, reauthErr := c.apiClient.ReauthEnvironment(c.envID)
+	reauthResp, reauthErr := c.apiClient.ReauthEnvironmentContext(ctx, c.envID)
 	if reauthErr == nil {
 		// A successful control-plane response may already have advanced the
 		// durable auth revision. Fence this client before validating the payload
 		// so malformed success data cannot provoke a second concurrent rotation.
 		c.close()
+		c.authGeneration++
 		if reauthResp.EnvID != c.envID {
 			return nil, fmt.Errorf("reauth returned environment %q, expected %q", reauthResp.EnvID, c.envID)
 		}
@@ -305,7 +426,7 @@ func (c *EnvConn) recoverAuthentication(
 func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 	c.state = StateResolving
 
-	env, err := c.apiClient.GetEnvironment(c.envID)
+	env, err := c.apiClient.GetEnvironmentContext(ctx, c.envID)
 	if err != nil {
 		c.state = StateDisconnected
 		return fmt.Errorf("get environment: %w", err)
@@ -318,7 +439,7 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 
 	case "sleeping":
 		log.Printf("[env:%s] sleeping, waking...", c.envID)
-		wakeResp, err := c.apiClient.WakeEnvironment(c.envID)
+		wakeResp, err := c.apiClient.WakeEnvironmentContext(ctx, c.envID)
 		if err != nil {
 			c.state = StateDisconnected
 			return fmt.Errorf("wake: %w", err)
@@ -329,8 +450,12 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 		if wakeResp.Secret != "" {
 			c.secret = wakeResp.Secret
 			c.sessionToken = "" // new secret invalidates old session
+			c.authGeneration++
 			// Persist so MCP restarts between now and first auth don't lose the secret
-			auth.SaveEnvironment(c.envID, env.Endpoint, wakeResp.Secret)
+			if err := auth.SaveEnvironment(c.envID, env.Endpoint, wakeResp.Secret); err != nil {
+				c.state = StateDisconnected
+				return fmt.Errorf("persist wake secret: %w", err)
+			}
 		}
 		log.Printf("[env:%s] woke, endpoint=%s", c.envID, env.Endpoint)
 
@@ -338,8 +463,11 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 		// Poll until running
 		log.Printf("[env:%s] %s, waiting...", c.envID, env.State)
 		for i := 0; i < 15; i++ {
-			time.Sleep(2 * time.Second)
-			status, err := c.apiClient.GetEnvironment(c.envID)
+			if err := waitForContext(ctx, 2*time.Second); err != nil {
+				c.state = StateDisconnected
+				return err
+			}
+			status, err := c.apiClient.GetEnvironmentContext(ctx, c.envID)
 			if err != nil {
 				continue
 			}
@@ -407,6 +535,7 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 		}
 		c.sessionToken = token
 		c.secret = "" // consumed
+		c.authGeneration++
 		c.mu.Unlock()
 		// Persist so MCP restarts can reuse the token (also clears stale secret from disk)
 		auth.SaveSessionToken(token)
@@ -425,9 +554,17 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 // close shuts down the current connection. Must be called with c.mu held.
 func (c *EnvConn) close() {
 	if c.client != nil {
-		c.client.Close()
+		client := c.client
 		c.client = nil
 		c.generation++
+		if c.inflight[client] > 0 {
+			if c.retired == nil {
+				c.retired = make(map[*agentgrpc.Client]struct{})
+			}
+			c.retired[client] = struct{}{}
+		} else {
+			_ = client.Close()
+		}
 	}
 	c.state = StateDisconnected
 }
@@ -488,6 +625,7 @@ func (c *EnvConn) SetSecret(secret string) {
 	defer c.mu.Unlock()
 	c.secret = secret
 	c.sessionToken = "" // new secret invalidates old session
+	c.authGeneration++
 }
 
 func (c *EnvConn) authMode() string {
@@ -505,4 +643,15 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func waitForContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

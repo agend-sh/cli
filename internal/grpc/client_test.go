@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -189,6 +190,103 @@ func TestRejectedHandshakeDoesNotDispatchRequestedMutation(t *testing.T) {
 	testServer.mu.Unlock()
 	if secretCalls != 1 || sessionExecs != 0 {
 		t.Fatalf("server calls: secret=%d session_exec=%d; want 1,0", secretCalls, sessionExecs)
+	}
+}
+
+type blockingHandshakeServer struct {
+	pb.UnimplementedAgentServiceServer
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingHandshakeServer) interceptor(
+	ctx context.Context,
+	req any,
+	info *ggrpc.UnaryServerInfo,
+	handler ggrpc.UnaryHandler,
+) (any, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	if firstMetadataValue(md, "x-one-time-secret") == "blocking-secret" {
+		resp, err := handler(ctx, req)
+		_ = ggrpc.SetTrailer(ctx, metadata.Pairs("x-session-token", "blocking-session"))
+		return resp, err
+	}
+	if firstMetadataValue(md, "x-session-token") == "blocking-session" {
+		return handler(ctx, req)
+	}
+	if info.FullMethod == "/agentd.v1.AgentService/Ping" {
+		return handler(ctx, req)
+	}
+	return nil, status.Error(codes.Unauthenticated, "missing credentials")
+}
+
+func (s *blockingHandshakeServer) Ping(ctx context.Context, _ *pb.PingRequest) (*pb.PingResponse, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.release:
+		return &pb.PingResponse{}, nil
+	}
+}
+
+func (s *blockingHandshakeServer) Exec(context.Context, *pb.ExecRequest) (*pb.ExecResponse, error) {
+	return &pb.ExecResponse{Status: "completed"}, nil
+}
+
+func TestCancelledCallerStopsWaitingForHandshakeGate(t *testing.T) {
+	testServer := &blockingHandshakeServer{entered: make(chan struct{}), release: make(chan struct{})}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := ggrpc.NewServer(ggrpc.UnaryInterceptor(testServer.interceptor))
+	pb.RegisterAgentServiceServer(server, testServer)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	client, err := Dial(dialCtx, listener.Addr().String(), "blocking-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, callErr := client.Agent.Exec(context.Background(), &pb.ExecRequest{Command: "first"})
+		firstDone <- callErr
+	}()
+	select {
+	case <-testServer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handshake did not enter Ping")
+	}
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	cancelSecond()
+	started := time.Now()
+	_, secondErr := client.Agent.Exec(secondCtx, &pb.ExecRequest{Command: "second"})
+	if !errors.Is(secondErr, context.Canceled) && status.Code(secondErr) != codes.Canceled {
+		t.Fatalf("cancelled waiter error = %v, want Canceled", secondErr)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cancelled waiter took %s to leave auth gate", elapsed)
+	}
+
+	close(testServer.release)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first Exec: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Exec did not finish")
 	}
 }
 

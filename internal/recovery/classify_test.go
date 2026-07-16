@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -69,6 +70,23 @@ func TestIsUnauthenticatedTextRequiresGRPCRejection(t *testing.T) {
 	} {
 		if IsUnauthenticatedText(unsafe) {
 			t.Fatalf("non-authoritative auth text was treated as safe to replay: %q", unsafe)
+		}
+	}
+}
+
+func TestIsUnauthenticatedRequiresTypedGRPCRejection(t *testing.T) {
+	typed := status.Error(codes.Unauthenticated, "invalid session token")
+	if !IsUnauthenticated(fmt.Errorf("exec failed: %w", typed)) {
+		t.Fatal("wrapped typed gRPC Unauthenticated status was not recognized")
+	}
+	for _, unsafe := range []error{
+		errors.New("status code 401 Unauthorized"),
+		errors.New("invalid session token"),
+		errors.New("rpc error: code = Unauthenticated desc = invalid session token"),
+		status.Error(codes.Unavailable, "upstream returned 401"),
+	} {
+		if IsUnauthenticated(unsafe) {
+			t.Fatalf("ambiguous auth error was treated as safe to replay: %v", unsafe)
 		}
 	}
 }

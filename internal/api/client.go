@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -160,7 +161,14 @@ func (c *Client) CreateEnvironment() (*CreateEnvResponse, error) {
 }
 
 func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
-	return doControlPlaneJSON[EnvStatusResponse](c, "GET", "/environments/"+envID, nil)
+	return c.GetEnvironmentContext(context.Background(), envID)
+}
+
+// GetEnvironmentContext is GetEnvironment with caller-controlled cancellation.
+// Long-lived MCP processes use it so a cancelled tool call does not remain
+// stuck behind the control-plane client's 30-second transport timeout.
+func (c *Client) GetEnvironmentContext(ctx context.Context, envID string) (*EnvStatusResponse, error) {
+	return doControlPlaneJSONContext[EnvStatusResponse](ctx, c, "GET", "/environments/"+envID, nil)
 }
 
 func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {
@@ -168,7 +176,12 @@ func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {
 }
 
 func (c *Client) WakeEnvironment(envID string) (*EnvWakeResponse, error) {
-	return doControlPlaneJSON[EnvWakeResponse](c, "POST", "/environments/"+envID+"/wake", nil)
+	return c.WakeEnvironmentContext(context.Background(), envID)
+}
+
+// WakeEnvironmentContext is WakeEnvironment with caller-controlled cancellation.
+func (c *Client) WakeEnvironmentContext(ctx context.Context, envID string) (*EnvWakeResponse, error) {
+	return doControlPlaneJSONContext[EnvWakeResponse](ctx, c, "POST", "/environments/"+envID+"/wake", nil)
 }
 
 type ReauthResponse struct {
@@ -177,7 +190,12 @@ type ReauthResponse struct {
 }
 
 func (c *Client) ReauthEnvironment(envID string) (*ReauthResponse, error) {
-	return doControlPlaneJSON[ReauthResponse](c, "POST", "/environments/"+envID+"/reauth", nil)
+	return c.ReauthEnvironmentContext(context.Background(), envID)
+}
+
+// ReauthEnvironmentContext is ReauthEnvironment with caller-controlled cancellation.
+func (c *Client) ReauthEnvironmentContext(ctx context.Context, envID string) (*ReauthResponse, error) {
+	return doControlPlaneJSONContext[ReauthResponse](ctx, c, "POST", "/environments/"+envID+"/reauth", nil)
 }
 
 // Domains
@@ -229,10 +247,18 @@ func (c *Client) ResolveDomainCredentials(zone string) (*DomainCredentials, erro
 // and is never retried against an unversioned (v1) lifecycle route. Old CLI
 // releases continue to address v1 while the two control planes coexist.
 func doControlPlaneJSON[T any](c *Client, method, path string, body any) (*T, error) {
-	return doJSON[T](c, method, controlPlaneV2Prefix+path, body)
+	return doControlPlaneJSONContext[T](context.Background(), c, method, path, body)
+}
+
+func doControlPlaneJSONContext[T any](ctx context.Context, c *Client, method, path string, body any) (*T, error) {
+	return doJSONContext[T](ctx, c, method, controlPlaneV2Prefix+path, body)
 }
 
 func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
+	return doJSONContext[T](context.Background(), c, method, path, body)
+}
+
+func doJSONContext[T any](ctx context.Context, c *Client, method, path string, body any) (*T, error) {
 	if c.baseURLErr != nil {
 		return nil, c.baseURLErr
 	}
@@ -246,7 +272,7 @@ func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return nil, err
 	}
