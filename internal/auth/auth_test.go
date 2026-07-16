@@ -146,6 +146,59 @@ func TestSaveSessionTokenAppearsInLoadEnvironment(t *testing.T) {
 	}
 }
 
+func TestSaveEnvironmentFreshSecretClearsSessionToken(t *testing.T) {
+	setupHome(t)
+
+	if err := SaveToken("tok_rotate"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveEnvironment("env-rotate", "old:443", "old-secret"); err != nil {
+		t.Fatalf("SaveEnvironment: %v", err)
+	}
+	if err := SaveSessionToken("old-session"); err != nil {
+		t.Fatalf("SaveSessionToken: %v", err)
+	}
+
+	// Wake/reauth returns a fresh one-time secret. The old session must not
+	// shadow it because the gRPC client gives session tokens precedence.
+	if err := SaveEnvironment("env-rotate", "new:443", "new-secret"); err != nil {
+		t.Fatalf("SaveEnvironment after rotation: %v", err)
+	}
+	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment: %v", err)
+	}
+	if endpoint != "new:443" || secret != "new-secret" || sessionToken != "" {
+		t.Fatalf("rotated credentials = endpoint %q, secret %q, session %q", endpoint, secret, sessionToken)
+	}
+}
+
+func TestSaveEnvironmentEmptySecretPreservesSessionToken(t *testing.T) {
+	setupHome(t)
+
+	if err := SaveToken("tok_refresh"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveEnvironment("env-refresh", "old:443", "secret"); err != nil {
+		t.Fatalf("SaveEnvironment: %v", err)
+	}
+	if err := SaveSessionToken("active-session"); err != nil {
+		t.Fatalf("SaveSessionToken: %v", err)
+	}
+
+	// An endpoint-only refresh must keep an otherwise-valid session.
+	if err := SaveEnvironment("env-refresh", "new:443", ""); err != nil {
+		t.Fatalf("SaveEnvironment after endpoint refresh: %v", err)
+	}
+	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment: %v", err)
+	}
+	if endpoint != "new:443" || secret != "" || sessionToken != "active-session" {
+		t.Fatalf("refreshed credentials = endpoint %q, secret %q, session %q", endpoint, secret, sessionToken)
+	}
+}
+
 func TestSaveAndLoadAPIURL(t *testing.T) {
 	setupHome(t)
 

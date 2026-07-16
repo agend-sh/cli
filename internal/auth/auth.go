@@ -291,12 +291,18 @@ func TokenEmail(token string) (string, bool) {
 	return claims.Email, true
 }
 
-// SaveEnvironment stores the active account's active environment.
+// SaveEnvironment stores the active account's active environment. A non-empty
+// one-time secret is authoritative and invalidates any session token issued for
+// the previous secret. Empty-secret updates (for example, endpoint refreshes)
+// preserve the active session.
 func SaveEnvironment(envID, endpoint, secret string) error {
 	return mutateActive(func(a *account) {
 		a.EnvID = envID
 		a.Endpoint = endpoint
 		a.Secret = secret
+		if secret != "" {
+			a.SessionToken = ""
+		}
 	})
 }
 
