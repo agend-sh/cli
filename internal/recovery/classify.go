@@ -112,6 +112,22 @@ func ClassifyText(msg string) Category {
 	return StaleEndpoint
 }
 
+// IsUnauthenticatedText reports whether an MCP tool's rendered error retains
+// the exact gRPC status proving the daemon rejected the RPC before its handler
+// ran. A bare HTTP/Cloudflare "401" is classified as an auth problem for
+// read-only recovery, but it is not proof that a side-effecting gRPC operation
+// was rejected before execution.
+func IsUnauthenticatedText(msg string) bool {
+	const marker = "rpc error: code = "
+	lower := strings.ToLower(msg)
+	index := strings.Index(lower, marker)
+	if index < 0 {
+		return false
+	}
+	remainder := lower[index+len(marker):]
+	return remainder == "unauthenticated" || strings.HasPrefix(remainder, "unauthenticated ")
+}
+
 // nonIdempotentExempt is the read-only / idempotent tool allowlist. Everything
 // not listed is treated as side-effecting and must NOT be transparently
 // re-executed after it may have already run (e.g. a "connection reset" that

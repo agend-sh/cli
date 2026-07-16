@@ -57,6 +57,22 @@ func TestClassifyText_WindowsSocketErrors(t *testing.T) {
 	}
 }
 
+func TestIsUnauthenticatedTextRequiresGRPCRejection(t *testing.T) {
+	if !IsUnauthenticatedText("exec failed: rpc error: code = Unauthenticated desc = invalid session token") {
+		t.Fatal("exact gRPC Unauthenticated status was not recognized")
+	}
+	for _, unsafe := range []string{
+		"status code 401 Unauthorized",
+		"rpc error: code = Unavailable desc = Cloudflare API status 401",
+		"rpc error: code = Unavailable desc = guest said rpc error: code = Unauthenticated",
+		"invalid session token",
+	} {
+		if IsUnauthenticatedText(unsafe) {
+			t.Fatalf("non-authoritative auth text was treated as safe to replay: %q", unsafe)
+		}
+	}
+}
+
 func TestIsIdempotent(t *testing.T) {
 	// Read-only ops are retryable.
 	for _, tool := range []string{"port_list", "file_download", "shell_task_output", "shell_resize", "env_status"} {
