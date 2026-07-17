@@ -24,18 +24,20 @@ import (
 // environment. Each account is independent, so operating on one never
 // disturbs another.
 type account struct {
-	Email        string `json:"email,omitempty"`
-	Token        string `json:"token"`
-	EnvID        string `json:"env_id,omitempty"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	Secret       string `json:"secret,omitempty"`
-	SessionToken string `json:"session_token,omitempty"`
+	Email               string `json:"email,omitempty"`
+	Token               string `json:"token"`
+	EnvID               string `json:"env_id,omitempty"`
+	Endpoint            string `json:"endpoint,omitempty"`
+	Secret              string `json:"secret,omitempty"`
+	SessionToken        string `json:"session_token,omitempty"`
+	ControlPlaneVersion string `json:"control_plane_version,omitempty"`
 }
 
-// store is the on-disk credentials file (v2): multiple accounts keyed by email
+// store is the on-disk credentials file (v3): multiple accounts keyed by email
 // plus a pointer to the active one, so `agend login` adds-not-clobbers and you
-// can switch accounts without losing sessions. The v1 single-account flat
-// format is migrated transparently on first load.
+// can switch accounts without losing sessions. V3 also binds environment
+// credentials to their control-plane generation. Older stores retain login
+// state but never carry environment authority into the v2 CLI.
 type store struct {
 	Version  int                 `json:"version"`
 	Active   string              `json:"active,omitempty"`
@@ -43,7 +45,10 @@ type store struct {
 	APIURL   string              `json:"api_url,omitempty"`
 }
 
-const storeVersion = 2
+const (
+	storeVersion          = 3
+	v2ControlPlaneVersion = "v2"
+)
 
 // storeMu serializes credential read-modify-write operations within a CLI/MCP
 // process. The file replacement itself is atomic, but without this lock two
@@ -68,8 +73,39 @@ func accountKey(token string) string {
 	return "default"
 }
 
-// loadStore reads the credentials file, migrating the v1 flat format if found.
-// A missing file yields an empty store (not an error).
+// clearEnvironmentAuthority removes every field that can select or authenticate
+// an environment. It deliberately includes EnvID: callers must not accidentally
+// recover an old environment by resolving a fresh endpoint for that ID.
+func clearEnvironmentAuthority(a *account) {
+	if a == nil {
+		return
+	}
+	a.EnvID = ""
+	a.Endpoint = ""
+	a.Secret = ""
+	a.SessionToken = ""
+	a.ControlPlaneVersion = ""
+}
+
+func hasV2Environment(a *account) bool {
+	return a != nil && a.ControlPlaneVersion == v2ControlPlaneVersion
+}
+
+// sanitizeEnvironmentAuthority enforces the generation boundary at the store
+// edge. A v2-looking marker inside an older schema is not trusted: schema 3 was
+// the first format that defined this marker, so both must match exactly.
+func sanitizeEnvironmentAuthority(s *store, sourceVersion int) {
+	trustedSchema := sourceVersion == storeVersion
+	for _, a := range s.Accounts {
+		if !trustedSchema || !hasV2Environment(a) {
+			clearEnvironmentAuthority(a)
+		}
+	}
+	s.Version = storeVersion
+}
+
+// loadStore reads the credentials file, retaining only safe common login state
+// from older formats. A missing file yields an empty store (not an error).
 func loadStore() (*store, error) {
 	path, err := configPath()
 	if err != nil {
@@ -88,29 +124,24 @@ func loadStore() (*store, error) {
 		return nil, err
 	}
 	if s.Accounts != nil {
-		return &s, nil // already v2
+		sanitizeEnvironmentAuthority(&s, s.Version)
+		return &s, nil
 	}
 
-	// v1 (flat single-account) → migrate into the v2 store.
+	// V1 flat single-account data predates an explicit control-plane marker.
+	// Preserve the token/account and API URL, but discard its environment
+	// endpoint and credentials instead of guessing which generation owns them.
 	var legacy struct {
-		Token        string `json:"token"`
-		EnvID        string `json:"env_id"`
-		Endpoint     string `json:"endpoint"`
-		Secret       string `json:"secret"`
-		SessionToken string `json:"session_token"`
-		APIURL       string `json:"api_url"`
+		Token  string `json:"token"`
+		APIURL string `json:"api_url"`
 	}
 	_ = json.Unmarshal(data, &legacy)
 	migrated := &store{Version: storeVersion, Accounts: map[string]*account{}, APIURL: legacy.APIURL}
 	if legacy.Token != "" {
 		key := accountKey(legacy.Token)
 		migrated.Accounts[key] = &account{
-			Email:        key,
-			Token:        legacy.Token,
-			EnvID:        legacy.EnvID,
-			Endpoint:     legacy.Endpoint,
-			Secret:       legacy.Secret,
-			SessionToken: legacy.SessionToken,
+			Email: key,
+			Token: legacy.Token,
 		}
 		migrated.Active = key
 	}
@@ -304,15 +335,17 @@ func TokenEmail(token string) (string, bool) {
 	return claims.Email, true
 }
 
-// SaveEnvironment stores the active account's active environment. A non-empty
-// one-time secret is authoritative and invalidates any session token issued for
-// the previous secret. Empty-secret updates (for example, endpoint refreshes)
-// preserve the active session.
+// SaveEnvironment stores a v2 environment for the active account. The CLI's
+// lifecycle API is hard-routed to /v2, so this write is the sole point where
+// environment authority gains an explicit v2 generation marker. A non-empty
+// one-time secret invalidates any session token issued for the previous secret.
+// Empty-secret updates (for example, endpoint refreshes) preserve the session.
 func SaveEnvironment(envID, endpoint, secret string) error {
 	return mutateActive(func(a *account) {
 		a.EnvID = envID
 		a.Endpoint = endpoint
 		a.Secret = secret
+		a.ControlPlaneVersion = v2ControlPlaneVersion
 		if secret != "" {
 			a.SessionToken = ""
 		}
@@ -327,7 +360,7 @@ func LoadEnvironment() (envID, endpoint, secret, sessionToken string, err error)
 		return "", "", "", "", err
 	}
 	a := activeAccount(s)
-	if a == nil {
+	if !hasV2Environment(a) {
 		return "", "", "", "", nil
 	}
 	return a.EnvID, a.Endpoint, a.Secret, a.SessionToken, nil
@@ -337,6 +370,9 @@ func LoadEnvironment() (envID, endpoint, secret, sessionToken string, err error)
 // Clears the one-time secret since it was consumed to obtain this token.
 func SaveSessionToken(token string) error {
 	return mutateActive(func(a *account) {
+		if !hasV2Environment(a) {
+			return
+		}
 		a.SessionToken = token
 		a.Secret = "" // consumed — never valid again
 	})
@@ -362,7 +398,7 @@ func SaveSessionTokenForEnvironment(envID, expectedSecret, expectedSessionToken,
 		return false, err
 	}
 	a := activeAccount(s)
-	if a == nil || a.EnvID != envID || a.Secret != expectedSecret || a.SessionToken != expectedSessionToken {
+	if !hasV2Environment(a) || a.EnvID != envID || a.Secret != expectedSecret || a.SessionToken != expectedSessionToken {
 		return false, nil
 	}
 	a.SessionToken = token
@@ -383,10 +419,7 @@ func ClearSessionToken() error {
 // ClearEnvironment removes the active account's environment info.
 func ClearEnvironment() error {
 	return mutateActive(func(a *account) {
-		a.EnvID = ""
-		a.Endpoint = ""
-		a.Secret = ""
-		a.SessionToken = ""
+		clearEnvironmentAuthority(a)
 	})
 }
 
