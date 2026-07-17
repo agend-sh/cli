@@ -56,6 +56,7 @@ func newExecCmd() *cobra.Command {
 
 			if interactive {
 				fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
+				fmt.Printf("input_wait: %t\n", resp.InputWait)
 				if resp.Screen != "" {
 					fmt.Println(sanitizeRemote(resp.Screen))
 				}

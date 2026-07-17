@@ -121,9 +121,13 @@ type ExecResponse struct {
 	// Set when run_in_background = true
 	TaskId string `protobuf:"bytes,8,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	// Output truncation info
-	Truncated     bool   `protobuf:"varint,9,opt,name=truncated,proto3" json:"truncated,omitempty"`
-	TotalLines    uint32 `protobuf:"varint,10,opt,name=total_lines,json=totalLines,proto3" json:"total_lines,omitempty"`
-	ShownLines    uint32 `protobuf:"varint,11,opt,name=shown_lines,json=shownLines,proto3" json:"shown_lines,omitempty"`
+	Truncated  bool   `protobuf:"varint,9,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	TotalLines uint32 `protobuf:"varint,10,opt,name=total_lines,json=totalLines,proto3" json:"total_lines,omitempty"`
+	ShownLines uint32 `protobuf:"varint,11,opt,name=shown_lines,json=shownLines,proto3" json:"shown_lines,omitempty"`
+	// True only when the patched guest kernel emitted TIOCPKT_INPUTWAIT for the
+	// active PTY. An interactive timeout can still return awaiting_input with
+	// this false so TUI and REPL sessions remain driveable.
+	InputWait     bool `protobuf:"varint,12,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -235,6 +239,13 @@ func (x *ExecResponse) GetShownLines() uint32 {
 	return 0
 }
 
+func (x *ExecResponse) GetInputWait() bool {
+	if x != nil {
+		return x.InputWait
+	}
+	return false
+}
+
 type InputRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Input         string                 `protobuf:"bytes,1,opt,name=input,proto3" json:"input,omitempty"` // text input (newline appended automatically)
@@ -287,6 +298,7 @@ type InputResponse struct {
 	Stderr        string                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
 	PromptType    string                 `protobuf:"bytes,5,opt,name=prompt_type,json=promptType,proto3" json:"prompt_type,omitempty"`
 	PromptText    string                 `protobuf:"bytes,6,opt,name=prompt_text,json=promptText,proto3" json:"prompt_text,omitempty"`
+	InputWait     bool                   `protobuf:"varint,7,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"` // exact guest TIOCPKT_INPUTWAIT observation
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -361,6 +373,13 @@ func (x *InputResponse) GetPromptText() string {
 		return x.PromptText
 	}
 	return ""
+}
+
+func (x *InputResponse) GetInputWait() bool {
+	if x != nil {
+		return x.InputWait
+	}
+	return false
 }
 
 type RawInputRequest struct {
@@ -2131,7 +2150,7 @@ const file_proto_agentd_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"tail_lines\x18\x05 \x01(\rR\ttailLines\x12\x1d\n" +
 	"\n" +
-	"head_lines\x18\x06 \x01(\rR\theadLines\"\xc6\x02\n" +
+	"head_lines\x18\x06 \x01(\rR\theadLines\"\xe5\x02\n" +
 	"\fExecResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1b\n" +
 	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
@@ -2148,9 +2167,11 @@ const file_proto_agentd_v1_agent_proto_rawDesc = "" +
 	" \x01(\rR\n" +
 	"totalLines\x12\x1f\n" +
 	"\vshown_lines\x18\v \x01(\rR\n" +
-	"shownLines\"$\n" +
+	"shownLines\x12\x1d\n" +
+	"\n" +
+	"input_wait\x18\f \x01(\bR\tinputWait\"$\n" +
 	"\fInputRequest\x12\x14\n" +
-	"\x05input\x18\x01 \x01(\tR\x05input\"\xb6\x01\n" +
+	"\x05input\x18\x01 \x01(\tR\x05input\"\xd5\x01\n" +
 	"\rInputResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1b\n" +
 	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
@@ -2159,7 +2180,9 @@ const file_proto_agentd_v1_agent_proto_rawDesc = "" +
 	"\vprompt_type\x18\x05 \x01(\tR\n" +
 	"promptType\x12\x1f\n" +
 	"\vprompt_text\x18\x06 \x01(\tR\n" +
-	"promptText\"'\n" +
+	"promptText\x12\x1d\n" +
+	"\n" +
+	"input_wait\x18\a \x01(\bR\tinputWait\"'\n" +
 	"\x0fRawInputRequest\x12\x14\n" +
 	"\x05input\x18\x01 \x01(\tR\x05input\"_\n" +
 	"\x10RawInputResponse\x12\x16\n" +
