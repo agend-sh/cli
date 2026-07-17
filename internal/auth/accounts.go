@@ -21,10 +21,14 @@ func ListAccounts() ([]AccountInfo, error) {
 	}
 	out := make([]AccountInfo, 0, len(s.Accounts))
 	for email, a := range s.Accounts {
+		envID := ""
+		if hasV2Environment(a) {
+			envID = a.EnvID
+		}
 		out = append(out, AccountInfo{
 			Email:   email,
 			Active:  email == s.Active,
-			EnvID:   a.EnvID,
+			EnvID:   envID,
 			Expired: TokenExpired(a.Token),
 		})
 	}

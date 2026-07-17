@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"os"
 	"runtime"
 	"testing"
@@ -83,6 +84,23 @@ func TestSaveAndLoadEnvironment(t *testing.T) {
 	if sessionToken != "" {
 		t.Errorf("sessionToken = %q, want empty", sessionToken)
 	}
+
+	path, err := configPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s store
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	a := activeAccount(&s)
+	if s.Version != storeVersion || a == nil || a.ControlPlaneVersion != v2ControlPlaneVersion {
+		t.Fatalf("saved environment lacks v2 generation marker: version=%d account=%+v", s.Version, a)
+	}
 }
 
 func TestClearEnvironmentPreservesToken(t *testing.T) {
@@ -113,6 +131,13 @@ func TestClearEnvironmentPreservesToken(t *testing.T) {
 	}
 	if envID != "" || endpoint != "" || secret != "" || sessionToken != "" {
 		t.Errorf("env fields should be empty after clear, got (%q,%q,%q,%q)", envID, endpoint, secret, sessionToken)
+	}
+	s, err := loadStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := activeAccount(s); a == nil || a.ControlPlaneVersion != "" {
+		t.Fatalf("ClearEnvironment retained generation marker: %+v", a)
 	}
 }
 
