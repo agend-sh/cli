@@ -43,10 +43,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// AgentService is the gRPC API exposed by the daemon inside each microVM.
-// It mirrors the claude-shell-mcp MCP tool interface — the client sends
-// commands and gets results back. All PTY orchestration, readiness detection,
-// and interactive app handling happens inside the daemon.
+// AgentService is the gRPC API exposed by an environment execution backend.
+// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
+// host worker, which forwards bounded primitive operations to the guest shim.
+// The client sends commands and gets results without depending on the backend
+// generation.
 type AgentServiceClient interface {
 	// Execute a command. Returns stdout/stderr for completed commands.
 	// With interactive=true the daemon runs the command under a PTY and can
@@ -283,10 +284,11 @@ func (c *agentServiceClient) CompleteWake(ctx context.Context, in *CompleteWakeR
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
 //
-// AgentService is the gRPC API exposed by the daemon inside each microVM.
-// It mirrors the claude-shell-mcp MCP tool interface — the client sends
-// commands and gets results back. All PTY orchestration, readiness detection,
-// and interactive app handling happens inside the daemon.
+// AgentService is the gRPC API exposed by an environment execution backend.
+// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
+// host worker, which forwards bounded primitive operations to the guest shim.
+// The client sends commands and gets results without depending on the backend
+// generation.
 type AgentServiceServer interface {
 	// Execute a command. Returns stdout/stderr for completed commands.
 	// With interactive=true the daemon runs the command under a PTY and can

@@ -4,10 +4,11 @@ package agentd.v1;
 
 option go_package = "github.com/agend-sh/daemon/proto/agentd/v1;agentdv1";
 
-// AgentService is the gRPC API exposed by the daemon inside each microVM.
-// It mirrors the claude-shell-mcp MCP tool interface — the client sends
-// commands and gets results back. All PTY orchestration, readiness detection,
-// and interactive app handling happens inside the daemon.
+// AgentService is the gRPC API exposed by an environment execution backend.
+// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
+// host worker, which forwards bounded primitive operations to the guest shim.
+// The client sends commands and gets results without depending on the backend
+// generation.
 service AgentService {
 
   // --- Shell ---
@@ -117,6 +118,11 @@ message ExecResponse {
   bool truncated = 9;
   uint32 total_lines = 10;
   uint32 shown_lines = 11;
+
+  // Reports interactive session readiness for the
+  // active PTY. An interactive timeout can still return awaiting_input with
+  // this false so TUI and REPL sessions remain driveable.
+  bool input_wait = 12;
 }
 
 message InputRequest {
@@ -130,6 +136,7 @@ message InputResponse {
   string stderr = 4;
   string prompt_type = 5;
   string prompt_text = 6;
+  bool input_wait = 7;            // interactive session readiness
 }
 
 message RawInputRequest {

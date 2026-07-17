@@ -35,6 +35,7 @@ func newInputCmd() *cobra.Command {
 			}
 
 			fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
+			fmt.Printf("input_wait: %t\n", resp.InputWait)
 			if resp.Stdout != "" {
 				fmt.Println(sanitizeForTTY(resp.Stdout, os.Stdout))
 			}
