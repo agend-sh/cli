@@ -38,6 +38,29 @@ func TestValidateBaseURL(t *testing.T) {
 	}
 }
 
+func TestClientHTTPTimeoutWidensOnlyLoopbackDevelopmentEndpoints(t *testing.T) {
+	for _, test := range []struct {
+		baseURL string
+		want    time.Duration
+	}{
+		{baseURL: "https://api.agend.sh", want: defaultHTTPTimeout},
+		{baseURL: "https://api.example.com:8443", want: defaultHTTPTimeout},
+		{baseURL: "http://127.0.0.1:18000", want: loopbackHTTPTimeout},
+		{baseURL: "http://[::1]:18000", want: loopbackHTTPTimeout},
+		{baseURL: "http://localhost:18000", want: loopbackHTTPTimeout},
+		{baseURL: "not a URL", want: defaultHTTPTimeout},
+	} {
+		t.Run(test.baseURL, func(t *testing.T) {
+			if got := clientHTTPTimeout(test.baseURL); got != test.want {
+				t.Fatalf("clientHTTPTimeout(%q) = %s, want %s", test.baseURL, got, test.want)
+			}
+			if got := New(test.baseURL, "token").httpClient.Timeout; got != test.want {
+				t.Fatalf("New(%q) timeout = %s, want %s", test.baseURL, got, test.want)
+			}
+		})
+	}
+}
+
 func responseError[T any](_ *T, err error) error {
 	return err
 }

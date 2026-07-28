@@ -16,6 +16,8 @@ const (
 	DefaultBaseURL       = "https://api.agend.sh"
 	ControlPlaneVersion  = "v2"
 	controlPlaneV2Prefix = "/" + ControlPlaneVersion
+	defaultHTTPTimeout   = 30 * time.Second
+	loopbackHTTPTimeout  = 3 * time.Minute
 )
 
 type Client struct {
@@ -34,9 +36,27 @@ func New(baseURL, token string) *Client {
 		baseURLErr: validateBaseURL(baseURL),
 		token:      token,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: clientHTTPTimeout(baseURL),
 		},
 	}
+}
+
+// Nested QEMU lifecycle tests can legitimately take longer than the public
+// control-plane deadline while replaying an exact Firecracker restore. Keep
+// the production timeout unchanged and widen only explicitly local endpoints.
+func clientHTTPTimeout(baseURL string) time.Duration {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return defaultHTTPTimeout
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return loopbackHTTPTimeout
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return loopbackHTTPTimeout
+	}
+	return defaultHTTPTimeout
 }
 
 // validateBaseURL rejects API base URLs that would send the bearer token
