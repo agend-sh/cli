@@ -36,7 +36,10 @@ When interactive=true:
 Interactive workflow:
 1. shell_exec(command="python3", interactive=true) → "awaiting_input"
 2. shell_send_raw(input="print('hello')\n") → shows output + "awaiting_input"
-3. shell_send_raw(input="exit()\n") → "completed"
+3. shell_send_raw(input="exit()\n") → normally "completed"
+4. If step 3 briefly returns "awaiting_input" because the PTY snapshot raced
+   process exit, call shell_send_raw(input="") to refresh the same session;
+   it will report "completed" once the child-exit event is observed.
 
 To close an interactive session:
 - Send the app's quit command via shell_send_raw (e.g. "exit()\n", "/exit\n", ":q!\n")
