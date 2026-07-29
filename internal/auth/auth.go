@@ -352,6 +352,36 @@ func SaveEnvironment(envID, endpoint, secret string) error {
 	})
 }
 
+// SaveEndpointForEnvironment atomically refreshes only the endpoint of the
+// expected active environment. It preserves both the one-time secret and an
+// already-issued session token, and refuses to overwrite a newer environment
+// selected while the control-plane lookup was in flight.
+func SaveEndpointForEnvironment(envID, endpoint string) (bool, error) {
+	if envID == "" {
+		return false, errors.New("empty environment ID")
+	}
+	if endpoint == "" {
+		return false, errors.New("empty environment endpoint")
+	}
+
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	s, err := loadStore()
+	if err != nil {
+		return false, err
+	}
+	a := activeAccount(s)
+	if !hasV2Environment(a) || a.EnvID != envID {
+		return false, nil
+	}
+	a.Endpoint = endpoint
+	if err := saveStore(s); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // LoadEnvironment returns the active account's environment ID, endpoint, VM
 // secret, and session token.
 func LoadEnvironment() (envID, endpoint, secret, sessionToken string, err error) {
