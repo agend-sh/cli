@@ -29,6 +29,30 @@ func TestClassify_GRPCStatusCodes(t *testing.T) {
 	}
 }
 
+func TestClassifyText_GRPCStatusCodes(t *testing.T) {
+	cases := []struct {
+		message string
+		want    Category
+	}{
+		{"task_output failed: rpc error: code = NotFound desc = task not found: task_1", Fatal},
+		{"file_download failed: rpc error: code = PermissionDenied desc = access denied", Fatal},
+		{"exec failed: rpc error: code = InvalidArgument desc = invalid mode", Fatal},
+		{"resize failed: rpc error: code = FailedPrecondition desc = no active session", Fatal},
+		{"exec failed: rpc error: code = Unauthenticated desc = invalid session token", Auth},
+		{"exec failed: rpc error: code = Unavailable desc = guest unavailable", Transient},
+		{
+			"task_output failed: rpc error: code = Unavailable desc = " +
+				"guest task output: rpc error: code = NotFound desc = task not found",
+			Transient,
+		},
+	}
+	for _, test := range cases {
+		if got := ClassifyText(test.message); got != test.want {
+			t.Errorf("ClassifyText(%q) = %v, want %v", test.message, got, test.want)
+		}
+	}
+}
+
 func TestClassify_FallsBackToText(t *testing.T) {
 	// A non-status error classifies on its message.
 	if got := Classify(errors.New("dial tcp: no such host")); got != StaleEndpoint {
