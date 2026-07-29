@@ -331,6 +331,39 @@ func TestRecoveryGateAndBackoffHonorCancellation(t *testing.T) {
 	}
 }
 
+func TestSemanticGRPCErrorDoesNotReconnectOrRetry(t *testing.T) {
+	client := &agentgrpc.Client{}
+	conn := &EnvConn{
+		envID: "env-semantic-error", state: StateConnected,
+		client: client, generation: 1,
+	}
+	const original = "task_output failed: rpc error: code = NotFound desc = task not found: task_1"
+	calls := 0
+	started := time.Now()
+	text, isErr := conn.Execute(context.Background(), true, func(got *agentgrpc.Client) (string, bool) {
+		calls++
+		if got != client {
+			t.Fatalf("tool call used client %p, want %p", got, client)
+		}
+		return original, true
+	})
+	if !isErr || text != original {
+		t.Fatalf("Execute() = %q, isError=%v; want original semantic error", text, isErr)
+	}
+	if calls != 1 {
+		t.Fatalf("tool calls = %d, want exactly 1", calls)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("semantic error recovery took %s; want immediate return", elapsed)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.state != StateConnected || conn.client != client || conn.generation != 1 {
+		t.Fatalf("semantic error changed connection: state=%v client=%p generation=%d",
+			conn.state, conn.client, conn.generation)
+	}
+}
+
 func TestCancelledCallDoesNotWaitForRecoveryStateMutex(t *testing.T) {
 	conn := &EnvConn{}
 	if err := conn.acquireRecovery(context.Background()); err != nil {
