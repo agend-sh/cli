@@ -287,7 +287,9 @@ func newEnvStatusCmd() *cobra.Command {
 			if resp.Endpoint != "" && resp.State == "running" {
 				storedID, storedEndpoint, _, _, _ := auth.LoadEnvironment()
 				if storedID == resp.EnvID && storedEndpoint != resp.Endpoint {
-					auth.SaveEnvironment(resp.EnvID, resp.Endpoint, "")
+					if _, err := auth.SaveEndpointForEnvironment(resp.EnvID, resp.Endpoint); err != nil {
+						return fmt.Errorf("save refreshed endpoint: %w", err)
+					}
 				}
 			}
 			return nil

@@ -224,6 +224,71 @@ func TestSaveEnvironmentEmptySecretPreservesSessionToken(t *testing.T) {
 	}
 }
 
+func TestSaveEndpointForEnvironmentPreservesInitialSecretAndSession(t *testing.T) {
+	setupHome(t)
+
+	if err := SaveToken("tok_delayed"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveEnvironment("env-delayed", "", "one-time-secret"); err != nil {
+		t.Fatalf("SaveEnvironment: %v", err)
+	}
+	saved, err := SaveEndpointForEnvironment("env-delayed", "ready:443")
+	if err != nil {
+		t.Fatalf("SaveEndpointForEnvironment: %v", err)
+	}
+	if !saved {
+		t.Fatal("SaveEndpointForEnvironment did not match the active environment")
+	}
+	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment: %v", err)
+	}
+	if endpoint != "ready:443" || secret != "one-time-secret" || sessionToken != "" {
+		t.Fatalf("delayed endpoint credentials = endpoint %q, secret %q, session %q", endpoint, secret, sessionToken)
+	}
+
+	if err := SaveSessionToken("active-session"); err != nil {
+		t.Fatalf("SaveSessionToken: %v", err)
+	}
+	saved, err = SaveEndpointForEnvironment("env-delayed", "rotated:443")
+	if err != nil || !saved {
+		t.Fatalf("session endpoint refresh = saved %t, err %v", saved, err)
+	}
+	_, endpoint, secret, sessionToken, err = LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment after session refresh: %v", err)
+	}
+	if endpoint != "rotated:443" || secret != "" || sessionToken != "active-session" {
+		t.Fatalf("session refresh credentials = endpoint %q, secret %q, session %q", endpoint, secret, sessionToken)
+	}
+}
+
+func TestSaveEndpointForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T) {
+	setupHome(t)
+
+	if err := SaveToken("tok_switch"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveEnvironment("env-new", "new:443", "new-secret"); err != nil {
+		t.Fatalf("SaveEnvironment: %v", err)
+	}
+	saved, err := SaveEndpointForEnvironment("env-stale", "stale:443")
+	if err != nil {
+		t.Fatalf("SaveEndpointForEnvironment: %v", err)
+	}
+	if saved {
+		t.Fatal("stale endpoint unexpectedly overwrote the active environment")
+	}
+	envID, endpoint, secret, _, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment: %v", err)
+	}
+	if envID != "env-new" || endpoint != "new:443" || secret != "new-secret" {
+		t.Fatalf("active credentials changed to %q %q %q", envID, endpoint, secret)
+	}
+}
+
 func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := SaveToken("opaque-token"); err != nil {

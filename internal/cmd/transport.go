@@ -218,7 +218,7 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 // the control plane and persists it. Preserves the existing secret
 // because endpoint rotation alone does not invalidate the gRPC session.
 func refreshEndpoint(ctx context.Context) error {
-	envID, _, secret, _, err := auth.LoadEnvironment()
+	envID, _, _, _, err := auth.LoadEnvironment()
 	if err != nil || envID == "" {
 		return fmt.Errorf("no active environment in credentials")
 	}
@@ -233,7 +233,14 @@ func refreshEndpoint(ctx context.Context) error {
 	if env.Endpoint == "" {
 		return fmt.Errorf("env %s has no endpoint (state=%s)", envID, env.State)
 	}
-	return auth.SaveEnvironment(envID, env.Endpoint, secret)
+	saved, err := auth.SaveEndpointForEnvironment(envID, env.Endpoint)
+	if err != nil {
+		return err
+	}
+	if !saved {
+		return fmt.Errorf("active environment changed while refreshing endpoint")
+	}
+	return nil
 }
 
 // reauthEnvironment rotates the one-time secret via the control plane
