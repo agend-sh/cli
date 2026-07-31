@@ -59,11 +59,94 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvDeleteCmd())
 	cmd.AddCommand(newEnvWakeCmd())
+	cmd.AddCommand(newEnvUseCmd())
 	cmd.AddCommand(newEnvAcquireCmd())
 	cmd.AddCommand(newEnvReleaseCmd())
 	cmd.AddCommand(newEnvHeartbeatCmd())
 
 	return cmd
+}
+
+// newEnvUseCmd makes an owned environment the active CLI target. Restored
+// environments are created out of band and may already be running, so "wake"
+// is neither semantically correct nor accepted by the control plane. Reauth
+// issues fresh one-time authority for the selected running environment instead
+// of trusting the possibly-consumed secret returned by its status record.
+func newEnvUseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <env-id>",
+		Short: "Select an environment for CLI commands",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			envID := args[0]
+			status, err := client.GetEnvironment(envID)
+			if err != nil {
+				return fmt.Errorf("select failed: %w", err)
+			}
+			if status.EnvID != "" && status.EnvID != envID {
+				return fmt.Errorf("select returned environment %q, expected %q", status.EnvID, envID)
+			}
+
+			switch status.State {
+			case "running":
+				if status.Endpoint == "" {
+					return fmt.Errorf("environment %s is running without an endpoint", envID)
+				}
+				reauth, err := client.ReauthEnvironment(envID)
+				if err != nil {
+					return fmt.Errorf("select reauth failed: %w", err)
+				}
+				if reauth.EnvID != envID {
+					return fmt.Errorf("reauth returned environment %q, expected %q", reauth.EnvID, envID)
+				}
+				if reauth.Secret == "" {
+					return fmt.Errorf("reauth returned an empty one-time secret")
+				}
+				if err := auth.SaveEnvironment(envID, status.Endpoint, reauth.Secret); err != nil {
+					return fmt.Errorf("save environment: %w", err)
+				}
+				fmt.Printf("Using environment %s\n", envID)
+				fmt.Printf("  Endpoint: %s\n", status.Endpoint)
+				return nil
+
+			case "sleeping":
+				wake, err := client.WakeEnvironment(envID)
+				if err != nil {
+					return fmt.Errorf("select wake failed: %w", err)
+				}
+				if wake.EnvID != envID {
+					return fmt.Errorf("wake returned environment %q, expected %q", wake.EnvID, envID)
+				}
+				if wake.Secret == "" {
+					return fmt.Errorf("wake returned an empty one-time secret")
+				}
+				endpoint := wake.Endpoint
+				for i := 0; endpoint == "" && i < 30; i++ {
+					time.Sleep(time.Second)
+					current, err := client.GetEnvironment(envID)
+					if err == nil && current.State == "running" && current.Endpoint != "" {
+						endpoint = current.Endpoint
+					}
+				}
+				if endpoint == "" {
+					return fmt.Errorf("environment %s woke without an endpoint", envID)
+				}
+				if err := auth.SaveEnvironment(envID, endpoint, wake.Secret); err != nil {
+					return fmt.Errorf("save environment: %w", err)
+				}
+				fmt.Printf("Using environment %s\n", envID)
+				fmt.Printf("  Endpoint: %s\n", endpoint)
+				return nil
+
+			default:
+				return fmt.Errorf("cannot select environment %s from state %s", envID, status.State)
+			}
+		},
+	}
 }
 
 // newEnvAcquireCmd checks out a shared team environment (ADR-020): it leases the
