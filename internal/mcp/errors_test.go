@@ -12,8 +12,25 @@ func TestClassifyError(t *testing.T) {
 		{"context canceled", "rpc error: code = Canceled desc = context canceled", ErrFatal},
 
 		// Fatal — gRPC 4xx
-		{"404 not found", "rpc error: code = NotFound desc = 404 not found", ErrFatal},
-		{"403 forbidden", "rpc error: code = PermissionDenied desc = 403 forbidden", ErrFatal},
+		{"not found", "task_output failed: rpc error: code = NotFound desc = task not found", ErrFatal},
+		{"permission denied", "file_download failed: rpc error: code = PermissionDenied desc = access denied", ErrFatal},
+		{"invalid argument", "rpc error: code = InvalidArgument desc = invalid mode", ErrFatal},
+		{"failed precondition", "rpc error: code = FailedPrecondition desc = no active session", ErrFatal},
+
+		// Fatal — local MCP client policy/filesystem errors. These never came
+		// from the endpoint and therefore must not trigger tunnel recovery.
+		{"download outside local root",
+			"download failed: local_path /tmp/escape is outside the allowed directory /tmp/root (set AGEND_LOCAL_ROOT to change it)",
+			ErrFatal},
+		{"upload path required", "upload failed: local_path is required", ErrFatal},
+		{"local target symlink",
+			"create local file: local_path /tmp/root/out is a symlink — refusing to write through it",
+			ErrFatal},
+		{"local upload read", "read local file: open /tmp/root/in: permission denied", ErrFatal},
+		{"local download write", "write: no space left on device", ErrFatal},
+		{"download checksum mismatch",
+			"download failed: checksum mismatch (expected abc, got def) — file removed",
+			ErrTransient},
 
 		// Fatal — port_expose misconfig. These used to fall through to
 		// ErrStaleEndpoint and trigger a 30s reconnect loop before surfacing

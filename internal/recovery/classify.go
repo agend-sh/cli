@@ -50,6 +50,27 @@ func Classify(err error) Category {
 func ClassifyText(msg string) Category {
 	t := strings.ToLower(msg)
 
+	// MCP tool handlers currently render typed gRPC errors into text before
+	// handing them to connection recovery. Preserve the status semantics from
+	// that canonical rendering instead of requiring an HTTP spelling such as
+	// "404 not found". The first marker is the outer status returned to the
+	// client; a nested status in the description must not override it.
+	const grpcMarker = "rpc error: code = "
+	if index := strings.Index(t, grpcMarker); index >= 0 {
+		code := strings.Fields(t[index+len(grpcMarker):])
+		if len(code) > 0 {
+			switch code[0] {
+			case "unauthenticated":
+				return Auth
+			case "permissiondenied", "notfound", "invalidargument",
+				"failedprecondition", "canceled":
+				return Fatal
+			case "unavailable", "deadlineexceeded":
+				return Transient
+			}
+		}
+	}
+
 	// Client-side cancellation — our deadline expired, not a connection issue.
 	if strings.Contains(t, "context canceled") || strings.Contains(t, "context deadline exceeded") {
 		return Fatal
@@ -112,6 +133,30 @@ func ClassifyText(msg string) Category {
 	return StaleEndpoint
 }
 
+// IsUnauthenticatedText reports whether an MCP tool's rendered error retains
+// the exact gRPC status proving the daemon rejected the RPC before its handler
+// ran. A bare HTTP/Cloudflare "401" is classified as an auth problem for
+// read-only recovery, but it is not proof that a side-effecting gRPC operation
+// was rejected before execution.
+func IsUnauthenticatedText(msg string) bool {
+	const marker = "rpc error: code = "
+	lower := strings.ToLower(msg)
+	index := strings.Index(lower, marker)
+	if index < 0 {
+		return false
+	}
+	remainder := lower[index+len(marker):]
+	return remainder == "unauthenticated" || strings.HasPrefix(remainder, "unauthenticated ")
+}
+
+// IsUnauthenticated reports whether err carries the typed gRPC status that
+// proves agentd's authentication interceptor rejected the RPC before its
+// handler ran. Text that merely mentions a 401 or an invalid token is not
+// sufficient proof for transparently replaying a side-effecting operation.
+func IsUnauthenticated(err error) bool {
+	return status.Code(err) == codes.Unauthenticated
+}
+
 // nonIdempotentExempt is the read-only / idempotent tool allowlist. Everything
 // not listed is treated as side-effecting and must NOT be transparently
 // re-executed after it may have already run (e.g. a "connection reset" that
@@ -124,6 +169,7 @@ var idempotentTools = map[string]bool{
 	"port_list":         true,
 	"file_download":     true,
 	"shell_task_output": true,
+	"shell_resize":      true,
 	"reload_config":     true,
 }
 

@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/agend-sh/cli/proto/agentd/v1"
 )
@@ -23,6 +25,8 @@ type Client struct {
 	Agent pb.AgentServiceClient
 
 	mu              sync.Mutex
+	authGateOnce    sync.Once
+	authGate        chan struct{}
 	secret          string             // one-time secret (cleared after handshake)
 	token           string             // session token (set after handshake)
 	OnTokenReceived func(token string) // called when session token is received
@@ -147,6 +151,16 @@ func (c *Client) Close() error {
 // authInterceptor injects auth headers and captures session tokens from responses.
 func (c *Client) authInterceptor() grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		// Authenticate on a short, side-effect-free Ping before dispatching the
+		// caller's RPC. MCP intentionally runs tool calls concurrently; allowing
+		// two of those calls to carry the same one-time secret would let the first
+		// consume it while the second failed (and potentially triggered another
+		// credential rotation). authMu is held only for this initial handshake;
+		// once a session token exists, normal RPCs remain fully concurrent.
+		if err := c.ensureAuthenticated(ctx, cc, invoker); err != nil {
+			return err
+		}
+
 		c.mu.Lock()
 		token := c.token
 		secret := c.secret
@@ -167,16 +181,104 @@ func (c *Client) authInterceptor() grpc.UnaryClientInterceptor {
 
 		// Extract session token from response
 		if tokens := trailer.Get("x-session-token"); len(tokens) > 0 {
-			c.mu.Lock()
-			c.token = tokens[0]
-			c.secret = "" // no longer needed
-			cb := c.OnTokenReceived
-			c.mu.Unlock()
-			if cb != nil {
-				cb(tokens[0])
-			}
+			c.acceptSessionToken(tokens[0])
 		}
 
 		return err
+	}
+}
+
+// ensureAuthenticated converts a one-time secret into a session token exactly
+// once per Client. The daemon deliberately permits unauthenticated Ping for
+// health checks, so a successful Ping without the token trailer is still an
+// authentication failure.
+func (c *Client) ensureAuthenticated(ctx context.Context, cc *grpc.ClientConn, invoker grpc.UnaryInvoker) error {
+	c.mu.Lock()
+	ready := c.token != "" || c.secret == ""
+	c.mu.Unlock()
+	if ready {
+		return nil
+	}
+
+	if err := c.acquireAuth(ctx); err != nil {
+		return err
+	}
+	defer c.releaseAuth()
+
+	// Another caller may have completed the handshake while this one waited.
+	c.mu.Lock()
+	if c.token != "" || c.secret == "" {
+		c.mu.Unlock()
+		return nil
+	}
+	secret := c.secret
+	c.mu.Unlock()
+
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	pingCtx = metadata.AppendToOutgoingContext(pingCtx, "x-one-time-secret", secret)
+	var trailer metadata.MD
+	var response pb.PingResponse
+	err := invoker(
+		pingCtx,
+		"/agentd.v1.AgentService/Ping",
+		&pb.PingRequest{},
+		&response,
+		cc,
+		grpc.Trailer(&trailer),
+	)
+	tokens := trailer.Get("x-session-token")
+	if len(tokens) == 1 && tokens[0] != "" {
+		// Authentication is complete even if the Ping handler itself reported a
+		// transient guest-shim health error: the daemon persists auth before it
+		// invokes the handler and returns the token in the trailer on that path.
+		c.acceptSessionToken(tokens[0])
+		return nil
+	}
+	if len(tokens) > 1 {
+		return status.Error(codes.DataLoss, "authentication returned multiple session tokens")
+	}
+	if err != nil {
+		return err
+	}
+	return status.Error(codes.Unauthenticated, "one-time secret was not accepted")
+}
+
+func (c *Client) acquireAuth(ctx context.Context) error {
+	c.authGateOnce.Do(func() {
+		c.authGate = make(chan struct{}, 1)
+		c.authGate <- struct{}{}
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.authGate:
+		if err := ctx.Err(); err != nil {
+			c.authGate <- struct{}{}
+			return err
+		}
+		return nil
+	}
+}
+
+func (c *Client) releaseAuth() {
+	c.authGate <- struct{}{}
+}
+
+func (c *Client) acceptSessionToken(token string) {
+	if token == "" {
+		return
+	}
+	c.mu.Lock()
+	changed := c.token != token
+	c.token = token
+	c.secret = "" // no longer needed
+	cb := c.OnTokenReceived
+	c.mu.Unlock()
+	if changed && cb != nil {
+		cb(token)
 	}
 }

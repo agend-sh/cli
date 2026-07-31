@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -217,6 +218,13 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		return s.reloadConfig()
 	}
 
+	// Reject deterministic client-side errors before resolving or connecting to
+	// an environment. Besides returning faster, this ensures local filesystem
+	// policy failures can never be mistaken for a stale remote endpoint.
+	if err := validateToolArguments(name, args); err != nil {
+		return err.Error(), true
+	}
+
 	// Resolve domain credentials for port_expose with custom domains
 	if name == "port_expose" {
 		if domain := strArg(args, "domain"); domain != "" {
@@ -262,6 +270,43 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	return conn.Execute(ctx, recovery.IsIdempotent(name), func(client *agentgrpc.Client) (string, bool) {
 		return dispatchTool(ctx, client, name, args)
 	})
+}
+
+func validateToolArguments(name string, args map[string]any) error {
+	switch name {
+	case "shell_exec":
+		interactive, _ := args["interactive"].(bool)
+		background, _ := args["run_in_background"].(bool)
+		if interactive && background {
+			return errors.New("interactive and run_in_background are mutually exclusive")
+		}
+	case "shell_resize":
+		if _, err := resizeDimensionArg(args, "columns"); err != nil {
+			return err
+		}
+		if _, err := resizeDimensionArg(args, "rows"); err != nil {
+			return err
+		}
+	case "file_download":
+		if _, err := resolveLocalPath(strArg(args, "local_path")); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	case "file_upload":
+		if _, err := resolveLocalPath(strArg(args, "local_path")); err != nil {
+			return fmt.Errorf("upload failed: %w", err)
+		}
+	case "port_expose", "port_unexpose":
+		if _, err := portArg(args); err != nil {
+			return err
+		}
+	case "shell_provide_input", "shell_send_raw", "shell_interrupt",
+		"shell_task_output", "shell_task_stop", "file_write", "file_move",
+		"env_stats", "port_list":
+		// The MCP schema and the daemon validate the remaining arguments.
+	default:
+		return fmt.Errorf("unknown tool: %s", name)
+	}
+	return nil
 }
 
 // resolveEnvID resolves an alias or env ID to the actual env ID.
@@ -330,9 +375,12 @@ func (s *Server) envCreate() (string, bool) {
 	// and persist to disk so MCP restarts can recover them.
 	if resp.Secret != "" {
 		conn := s.pool.Get(resp.EnvID)
-		conn.SetSecret(resp.Secret)
+		if err := conn.SetSecret(resp.Endpoint, resp.Secret); err != nil {
+			return fmt.Sprintf("create environment succeeded but persisting credentials failed: %v", err), true
+		}
+	} else if err := auth.SaveEnvironment(resp.EnvID, resp.Endpoint, ""); err != nil {
+		return fmt.Sprintf("create environment succeeded but persisting endpoint failed: %v", err), true
 	}
-	auth.SaveEnvironment(resp.EnvID, resp.Endpoint, resp.Secret)
 	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s\n"+
 		"note: a freshly-created tunnel can take up to ~60s to start routing. "+
 		"The first shell_exec may need a few seconds — the connection auto-retries; "+
@@ -366,9 +414,12 @@ func (s *Server) envWake(envRef string) (string, bool) {
 	// and persist to disk so MCP restarts can recover them.
 	if resp.Secret != "" {
 		conn := s.pool.Get(envID)
-		conn.SetSecret(resp.Secret)
+		if err := conn.SetSecret(resp.Endpoint, resp.Secret); err != nil {
+			return fmt.Sprintf("wake succeeded but persisting credentials failed: %v", err), true
+		}
+	} else if err := auth.SaveEnvironment(envID, resp.Endpoint, ""); err != nil {
+		return fmt.Sprintf("wake succeeded but persisting endpoint failed: %v", err), true
 	}
-	auth.SaveEnvironment(envID, resp.Endpoint, resp.Secret)
 	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s", resp.EnvID, resp.State, resp.Endpoint), false
 }
 
@@ -398,6 +449,8 @@ func dispatchTool(ctx context.Context, client *agentgrpc.Client, name string, ar
 		return callInput(ctx, client, args)
 	case "shell_send_raw":
 		return callRawInput(ctx, client, args)
+	case "shell_resize":
+		return callResize(ctx, client, args)
 	case "shell_interrupt":
 		return callInterrupt(ctx, client)
 	case "shell_task_output":
@@ -509,6 +562,32 @@ func callRawInput(ctx context.Context, client *agentgrpc.Client, args map[string
 		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
 	}
 	return out, false
+}
+
+func callResize(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
+	columns, err := resizeDimensionArg(args, "columns")
+	if err != nil {
+		return err.Error(), true
+	}
+	rows, err := resizeDimensionArg(args, "rows")
+	if err != nil {
+		return err.Error(), true
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := client.Resize(callCtx, columns, rows); err != nil {
+		return fmt.Sprintf("resize failed: %v", err), true
+	}
+	return fmt.Sprintf("resized: %dx%d", columns, rows), false
+}
+
+func resizeDimensionArg(args map[string]any, key string) (uint32, error) {
+	dimension := numArg(args[key])
+	if math.IsNaN(dimension) || math.IsInf(dimension, 0) || dimension != math.Trunc(dimension) ||
+		dimension < 1 || dimension > float64(agentgrpc.MaxPTYDimension) {
+		return 0, fmt.Errorf("%s must be an integer between 1 and %d", key, agentgrpc.MaxPTYDimension)
+	}
+	return uint32(dimension), nil
 }
 
 func callInterrupt(ctx context.Context, client *agentgrpc.Client) (string, bool) {
@@ -716,9 +795,9 @@ func callFileMove(ctx context.Context, client *agentgrpc.Client, args map[string
 }
 
 func callPortExpose(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
-	port := uint32(numArg(args["port"]))
-	if port == 0 {
-		return "port is required (1-65535)", true
+	port, err := portArg(args)
+	if err != nil {
+		return err.Error(), true
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -750,9 +829,9 @@ func callPortExpose(ctx context.Context, client *agentgrpc.Client, args map[stri
 }
 
 func callPortUnexpose(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
-	port := uint32(numArg(args["port"]))
-	if port == 0 {
-		return "port is required", true
+	port, err := portArg(args)
+	if err != nil {
+		return err.Error(), true
 	}
 	domain, _ := args["domain"].(string)
 
@@ -789,6 +868,15 @@ func callPortList(ctx context.Context, client *agentgrpc.Client) (string, bool) 
 		}
 	}
 	return result, false
+}
+
+func portArg(args map[string]any) (uint32, error) {
+	port := numArg(args["port"])
+	if math.IsNaN(port) || math.IsInf(port, 0) || port != math.Trunc(port) ||
+		port < 1 || port > 65535 {
+		return 0, errors.New("port must be an integer between 1 and 65535")
+	}
+	return uint32(port), nil
 }
 
 func formatExecResponse(resp *pb.ExecResponse) string {

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -25,9 +24,13 @@ func newExecCmd() *cobra.Command {
 		Short: "Execute a command in the remote environment",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			var resp *pb.ExecResponse
 			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+				if interactive && terminalResizeAvailable() {
+					stopResize := startTerminalResizeForwarding(ctx, client, cmd.ErrOrStderr())
+					defer stopResize()
+				}
 				r, err := client.Agent.Exec(ctx, &pb.ExecRequest{
 					Command:         strings.Join(args, " "),
 					TimeoutMs:       timeoutMs,
@@ -53,6 +56,7 @@ func newExecCmd() *cobra.Command {
 
 			if interactive {
 				fmt.Printf("status: %s\n", sanitizeRemote(resp.Status))
+				fmt.Printf("input_wait: %t\n", resp.InputWait)
 				if resp.Screen != "" {
 					fmt.Println(sanitizeRemote(resp.Screen))
 				}

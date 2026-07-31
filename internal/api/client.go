@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,13 @@ import (
 	"time"
 )
 
-const DefaultBaseURL = "https://api.agend.sh"
+const (
+	DefaultBaseURL       = "https://api.agend.sh"
+	ControlPlaneVersion  = "v2"
+	controlPlaneV2Prefix = "/" + ControlPlaneVersion
+	defaultHTTPTimeout   = 30 * time.Second
+	loopbackHTTPTimeout  = 3 * time.Minute
+)
 
 type Client struct {
 	baseURL    string
@@ -29,9 +36,27 @@ func New(baseURL, token string) *Client {
 		baseURLErr: validateBaseURL(baseURL),
 		token:      token,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: clientHTTPTimeout(baseURL),
 		},
 	}
+}
+
+// Nested QEMU lifecycle tests can legitimately take longer than the public
+// control-plane deadline while replaying an exact Firecracker restore. Keep
+// the production timeout unchanged and widen only explicitly local endpoints.
+func clientHTTPTimeout(baseURL string) time.Duration {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return defaultHTTPTimeout
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return loopbackHTTPTimeout
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return loopbackHTTPTimeout
+	}
+	return defaultHTTPTimeout
 }
 
 // validateBaseURL rejects API base URLs that would send the bearer token
@@ -148,23 +173,35 @@ type EnvSummary struct {
 }
 
 func (c *Client) ListEnvironments() (*ListEnvsResponse, error) {
-	return doJSON[ListEnvsResponse](c, "GET", "/environments", nil)
+	return doControlPlaneJSON[ListEnvsResponse](c, "GET", "/environments", nil)
 }
 
 func (c *Client) CreateEnvironment() (*CreateEnvResponse, error) {
-	return doJSON[CreateEnvResponse](c, "POST", "/environments", nil)
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", nil)
 }
 
 func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
-	return doJSON[EnvStatusResponse](c, "GET", "/environments/"+envID, nil)
+	return c.GetEnvironmentContext(context.Background(), envID)
+}
+
+// GetEnvironmentContext is GetEnvironment with caller-controlled cancellation.
+// Long-lived MCP processes use it so a cancelled tool call does not remain
+// stuck behind the control-plane client's 30-second transport timeout.
+func (c *Client) GetEnvironmentContext(ctx context.Context, envID string) (*EnvStatusResponse, error) {
+	return doControlPlaneJSONContext[EnvStatusResponse](ctx, c, "GET", "/environments/"+envID, nil)
 }
 
 func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {
-	return doJSON[EnvStopResponse](c, "DELETE", "/environments/"+envID, nil)
+	return doControlPlaneJSON[EnvStopResponse](c, "DELETE", "/environments/"+envID, nil)
 }
 
 func (c *Client) WakeEnvironment(envID string) (*EnvWakeResponse, error) {
-	return doJSON[EnvWakeResponse](c, "POST", "/environments/"+envID+"/wake", nil)
+	return c.WakeEnvironmentContext(context.Background(), envID)
+}
+
+// WakeEnvironmentContext is WakeEnvironment with caller-controlled cancellation.
+func (c *Client) WakeEnvironmentContext(ctx context.Context, envID string) (*EnvWakeResponse, error) {
+	return doControlPlaneJSONContext[EnvWakeResponse](ctx, c, "POST", "/environments/"+envID+"/wake", nil)
 }
 
 type ReauthResponse struct {
@@ -173,7 +210,12 @@ type ReauthResponse struct {
 }
 
 func (c *Client) ReauthEnvironment(envID string) (*ReauthResponse, error) {
-	return doJSON[ReauthResponse](c, "POST", "/environments/"+envID+"/reauth", nil)
+	return c.ReauthEnvironmentContext(context.Background(), envID)
+}
+
+// ReauthEnvironmentContext is ReauthEnvironment with caller-controlled cancellation.
+func (c *Client) ReauthEnvironmentContext(ctx context.Context, envID string) (*ReauthResponse, error) {
+	return doControlPlaneJSONContext[ReauthResponse](ctx, c, "POST", "/environments/"+envID+"/reauth", nil)
 }
 
 // Domains
@@ -203,24 +245,40 @@ type DomainCredentials struct {
 }
 
 func (c *Client) AddDomain(zone, cfToken string) (*DomainResponse, error) {
-	return doJSON[DomainResponse](c, "POST", "/domains", AddDomainRequest{Zone: zone, CFToken: cfToken})
+	return doControlPlaneJSON[DomainResponse](c, "POST", "/domains", AddDomainRequest{Zone: zone, CFToken: cfToken})
 }
 
 func (c *Client) ListDomains() (*ListDomainsResponse, error) {
-	return doJSON[ListDomainsResponse](c, "GET", "/domains", nil)
+	return doControlPlaneJSON[ListDomainsResponse](c, "GET", "/domains", nil)
 }
 
 func (c *Client) RemoveDomain(domainID string) (*DomainResponse, error) {
-	return doJSON[DomainResponse](c, "DELETE", "/domains/"+domainID, nil)
+	return doControlPlaneJSON[DomainResponse](c, "DELETE", "/domains/"+domainID, nil)
 }
 
 func (c *Client) ResolveDomainCredentials(zone string) (*DomainCredentials, error) {
-	return doJSON[DomainCredentials](c, "GET", "/domains/resolve?zone="+zone, nil)
+	return doControlPlaneJSON[DomainCredentials](c, "GET", "/domains/resolve?zone="+url.QueryEscape(zone), nil)
 }
 
 // HTTP helpers
 
+// doControlPlaneJSON sends a request to the host-shim control-plane API. V2 is
+// deliberately a hard boundary: a failed v2 request is returned to the caller
+// and is never retried against an unversioned (v1) lifecycle route. Old CLI
+// releases continue to address v1 while the two control planes coexist.
+func doControlPlaneJSON[T any](c *Client, method, path string, body any) (*T, error) {
+	return doControlPlaneJSONContext[T](context.Background(), c, method, path, body)
+}
+
+func doControlPlaneJSONContext[T any](ctx context.Context, c *Client, method, path string, body any) (*T, error) {
+	return doJSONContext[T](ctx, c, method, controlPlaneV2Prefix+path, body)
+}
+
 func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
+	return doJSONContext[T](context.Background(), c, method, path, body)
+}
+
+func doJSONContext[T any](ctx context.Context, c *Client, method, path string, body any) (*T, error) {
 	if c.baseURLErr != nil {
 		return nil, c.baseURLErr
 	}
@@ -234,7 +292,7 @@ func doJSON[T any](c *Client, method, path string, body any) (*T, error) {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -327,33 +385,33 @@ type messageResponse struct {
 }
 
 func (c *Client) CreateTeam(name string) (*CreateTeamResponse, error) {
-	return doJSON[CreateTeamResponse](c, "POST", "/teams", map[string]string{"name": name})
+	return doControlPlaneJSON[CreateTeamResponse](c, "POST", "/teams", map[string]string{"name": name})
 }
 
 func (c *Client) ListTeams() (*ListTeamsResponse, error) {
-	return doJSON[ListTeamsResponse](c, "GET", "/teams", nil)
+	return doControlPlaneJSON[ListTeamsResponse](c, "GET", "/teams", nil)
 }
 
 func (c *Client) InviteMember(teamID, email string) error {
-	_, err := doJSON[messageResponse](c, "POST", "/teams/"+teamID+"/invite", map[string]string{"email": email})
+	_, err := doControlPlaneJSON[messageResponse](c, "POST", "/teams/"+teamID+"/invite", map[string]string{"email": email})
 	return err
 }
 
 func (c *Client) AcceptInvite(teamID string) error {
-	_, err := doJSON[messageResponse](c, "POST", "/teams/"+teamID+"/accept", nil)
+	_, err := doControlPlaneJSON[messageResponse](c, "POST", "/teams/"+teamID+"/accept", nil)
 	return err
 }
 
 func (c *Client) ListMembers(teamID string) (*ListMembersResponse, error) {
-	return doJSON[ListMembersResponse](c, "GET", "/teams/"+teamID+"/members", nil)
+	return doControlPlaneJSON[ListMembersResponse](c, "GET", "/teams/"+teamID+"/members", nil)
 }
 
 func (c *Client) ListTeamEnvironments(teamID string) (*ListTeamEnvsResponse, error) {
-	return doJSON[ListTeamEnvsResponse](c, "GET", "/teams/"+teamID+"/environments", nil)
+	return doControlPlaneJSON[ListTeamEnvsResponse](c, "GET", "/teams/"+teamID+"/environments", nil)
 }
 
 func (c *Client) CreateTeamEnvironment(teamID string) (*CreateEnvResponse, error) {
-	return doJSON[CreateEnvResponse](c, "POST", "/environments", map[string]string{"team_id": teamID})
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", map[string]string{"team_id": teamID})
 }
 
 // AcquireResponse is the result of leasing a team env: a fresh one-time secret
@@ -366,15 +424,15 @@ type AcquireResponse struct {
 }
 
 func (c *Client) AcquireEnvironment(envID string) (*AcquireResponse, error) {
-	return doJSON[AcquireResponse](c, "POST", "/environments/"+envID+"/acquire", nil)
+	return doControlPlaneJSON[AcquireResponse](c, "POST", "/environments/"+envID+"/acquire", nil)
 }
 
 func (c *Client) ReleaseEnvironment(envID string) error {
-	_, err := doJSON[messageResponse](c, "POST", "/environments/"+envID+"/release", nil)
+	_, err := doControlPlaneJSON[messageResponse](c, "POST", "/environments/"+envID+"/release", nil)
 	return err
 }
 
 func (c *Client) HeartbeatEnvironment(envID string) error {
-	_, err := doJSON[messageResponse](c, "POST", "/environments/"+envID+"/heartbeat", nil)
+	_, err := doControlPlaneJSON[messageResponse](c, "POST", "/environments/"+envID+"/heartbeat", nil)
 	return err
 }

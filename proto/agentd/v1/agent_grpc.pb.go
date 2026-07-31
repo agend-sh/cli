@@ -22,6 +22,7 @@ const (
 	AgentService_Exec_FullMethodName           = "/agentd.v1.AgentService/Exec"
 	AgentService_Input_FullMethodName          = "/agentd.v1.AgentService/Input"
 	AgentService_RawInput_FullMethodName       = "/agentd.v1.AgentService/RawInput"
+	AgentService_Resize_FullMethodName         = "/agentd.v1.AgentService/Resize"
 	AgentService_Interrupt_FullMethodName      = "/agentd.v1.AgentService/Interrupt"
 	AgentService_TaskOutput_FullMethodName     = "/agentd.v1.AgentService/TaskOutput"
 	AgentService_TaskStop_FullMethodName       = "/agentd.v1.AgentService/TaskStop"
@@ -34,21 +35,26 @@ const (
 	AgentService_PortUnexpose_FullMethodName   = "/agentd.v1.AgentService/PortUnexpose"
 	AgentService_PortList_FullMethodName       = "/agentd.v1.AgentService/PortList"
 	AgentService_Ping_FullMethodName           = "/agentd.v1.AgentService/Ping"
+	AgentService_PrepareSleep_FullMethodName   = "/agentd.v1.AgentService/PrepareSleep"
+	AgentService_CompleteWake_FullMethodName   = "/agentd.v1.AgentService/CompleteWake"
 )
 
 // AgentServiceClient is the client API for AgentService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// AgentService is the gRPC API exposed by the daemon inside each microVM.
-// Clients send commands; the daemon executes them inside the box and returns
-// structured results, including support for long-running and interactive
-// applications.
+// AgentService is the gRPC API exposed by an environment execution backend.
+// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
+// host worker, which forwards bounded primitive operations to the guest shim.
+// The client sends commands and gets results without depending on the backend
+// generation.
 type AgentServiceClient interface {
-	// Execute a command. Returns stdout/stderr for completed commands,
-	// or status "awaiting_input" if the process is waiting for input. The
-	// daemon handles execution details, including interactive applications,
-	// internally.
+	// Execute a command. Returns stdout/stderr for completed commands.
+	// With interactive=true the daemon runs the command under a PTY and can
+	// return status "awaiting_input" when the process blocks for input (PTY,
+	// session readiness handled internally). A non-interactive
+	// exec has no stdin: a command that waits for input runs to the timeout and
+	// returns status "timeout" — re-run with interactive=true to drive it.
 	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error)
 	// Send text input to a process waiting for input (password, confirmation).
 	// Appends a newline automatically.
@@ -56,6 +62,9 @@ type AgentServiceClient interface {
 	// Send raw bytes to an interactive program (vim keystrokes, REPL code).
 	// No newline appended — sends exactly what you provide.
 	RawInput(ctx context.Context, in *RawInputRequest, opts ...grpc.CallOption) (*RawInputResponse, error)
+	// Resize the active interactive PTY. This is independent of a blocked PTY
+	// read so terminal resize events remain responsive.
+	Resize(ctx context.Context, in *ResizeRequest, opts ...grpc.CallOption) (*ResizeResponse, error)
 	// Send SIGINT (Ctrl+C) to interrupt a running command.
 	Interrupt(ctx context.Context, in *InterruptRequest, opts ...grpc.CallOption) (*InterruptResponse, error)
 	// Get the output of a background task started with run_in_background.
@@ -79,6 +88,8 @@ type AgentServiceClient interface {
 	// List currently exposed ports.
 	PortList(ctx context.Context, in *PortListRequest, opts ...grpc.CallOption) (*PortListResponse, error)
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	PrepareSleep(ctx context.Context, in *PrepareSleepRequest, opts ...grpc.CallOption) (*PrepareSleepResponse, error)
+	CompleteWake(ctx context.Context, in *CompleteWakeRequest, opts ...grpc.CallOption) (*CompleteWakeResponse, error)
 }
 
 type agentServiceClient struct {
@@ -113,6 +124,16 @@ func (c *agentServiceClient) RawInput(ctx context.Context, in *RawInputRequest, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RawInputResponse)
 	err := c.cc.Invoke(ctx, AgentService_RawInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) Resize(ctx context.Context, in *ResizeRequest, opts ...grpc.CallOption) (*ResizeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResizeResponse)
+	err := c.cc.Invoke(ctx, AgentService_Resize_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -239,19 +260,42 @@ func (c *agentServiceClient) Ping(ctx context.Context, in *PingRequest, opts ...
 	return out, nil
 }
 
+func (c *agentServiceClient) PrepareSleep(ctx context.Context, in *PrepareSleepRequest, opts ...grpc.CallOption) (*PrepareSleepResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareSleepResponse)
+	err := c.cc.Invoke(ctx, AgentService_PrepareSleep_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) CompleteWake(ctx context.Context, in *CompleteWakeRequest, opts ...grpc.CallOption) (*CompleteWakeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompleteWakeResponse)
+	err := c.cc.Invoke(ctx, AgentService_CompleteWake_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
 //
-// AgentService is the gRPC API exposed by the daemon inside each microVM.
-// Clients send commands; the daemon executes them inside the box and returns
-// structured results, including support for long-running and interactive
-// applications.
+// AgentService is the gRPC API exposed by an environment execution backend.
+// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
+// host worker, which forwards bounded primitive operations to the guest shim.
+// The client sends commands and gets results without depending on the backend
+// generation.
 type AgentServiceServer interface {
-	// Execute a command. Returns stdout/stderr for completed commands,
-	// or status "awaiting_input" if the process is waiting for input. The
-	// daemon handles execution details, including interactive applications,
-	// internally.
+	// Execute a command. Returns stdout/stderr for completed commands.
+	// With interactive=true the daemon runs the command under a PTY and can
+	// return status "awaiting_input" when the process blocks for input (PTY,
+	// session readiness handled internally). A non-interactive
+	// exec has no stdin: a command that waits for input runs to the timeout and
+	// returns status "timeout" — re-run with interactive=true to drive it.
 	Exec(context.Context, *ExecRequest) (*ExecResponse, error)
 	// Send text input to a process waiting for input (password, confirmation).
 	// Appends a newline automatically.
@@ -259,6 +303,9 @@ type AgentServiceServer interface {
 	// Send raw bytes to an interactive program (vim keystrokes, REPL code).
 	// No newline appended — sends exactly what you provide.
 	RawInput(context.Context, *RawInputRequest) (*RawInputResponse, error)
+	// Resize the active interactive PTY. This is independent of a blocked PTY
+	// read so terminal resize events remain responsive.
+	Resize(context.Context, *ResizeRequest) (*ResizeResponse, error)
 	// Send SIGINT (Ctrl+C) to interrupt a running command.
 	Interrupt(context.Context, *InterruptRequest) (*InterruptResponse, error)
 	// Get the output of a background task started with run_in_background.
@@ -282,6 +329,8 @@ type AgentServiceServer interface {
 	// List currently exposed ports.
 	PortList(context.Context, *PortListRequest) (*PortListResponse, error)
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	PrepareSleep(context.Context, *PrepareSleepRequest) (*PrepareSleepResponse, error)
+	CompleteWake(context.Context, *CompleteWakeRequest) (*CompleteWakeResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -300,6 +349,9 @@ func (UnimplementedAgentServiceServer) Input(context.Context, *InputRequest) (*I
 }
 func (UnimplementedAgentServiceServer) RawInput(context.Context, *RawInputRequest) (*RawInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RawInput not implemented")
+}
+func (UnimplementedAgentServiceServer) Resize(context.Context, *ResizeRequest) (*ResizeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Resize not implemented")
 }
 func (UnimplementedAgentServiceServer) Interrupt(context.Context, *InterruptRequest) (*InterruptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Interrupt not implemented")
@@ -336,6 +388,12 @@ func (UnimplementedAgentServiceServer) PortList(context.Context, *PortListReques
 }
 func (UnimplementedAgentServiceServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
+}
+func (UnimplementedAgentServiceServer) PrepareSleep(context.Context, *PrepareSleepRequest) (*PrepareSleepResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareSleep not implemented")
+}
+func (UnimplementedAgentServiceServer) CompleteWake(context.Context, *CompleteWakeRequest) (*CompleteWakeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteWake not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -408,6 +466,24 @@ func _AgentService_RawInput_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentServiceServer).RawInput(ctx, req.(*RawInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_Resize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResizeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).Resize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_Resize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).Resize(ctx, req.(*ResizeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -628,6 +704,42 @@ func _AgentService_Ping_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_PrepareSleep_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareSleepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).PrepareSleep(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_PrepareSleep_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).PrepareSleep(ctx, req.(*PrepareSleepRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_CompleteWake_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteWakeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).CompleteWake(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_CompleteWake_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).CompleteWake(ctx, req.(*CompleteWakeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -646,6 +758,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RawInput",
 			Handler:    _AgentService_RawInput_Handler,
+		},
+		{
+			MethodName: "Resize",
+			Handler:    _AgentService_Resize_Handler,
 		},
 		{
 			MethodName: "Interrupt",
@@ -694,6 +810,14 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Ping",
 			Handler:    _AgentService_Ping_Handler,
+		},
+		{
+			MethodName: "PrepareSleep",
+			Handler:    _AgentService_PrepareSleep_Handler,
+		},
+		{
+			MethodName: "CompleteWake",
+			Handler:    _AgentService_CompleteWake_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
