@@ -289,6 +289,47 @@ func TestSaveEndpointForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T
 	}
 }
 
+func TestClearEnvironmentForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T) {
+	setupHome(t)
+
+	if err := SaveToken("tok_delete"); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := SaveEnvironment("env-active", "active:443", "active-secret"); err != nil {
+		t.Fatalf("SaveEnvironment: %v", err)
+	}
+	cleared, err := ClearEnvironmentForEnvironment("env-other")
+	if err != nil {
+		t.Fatalf("ClearEnvironmentForEnvironment other: %v", err)
+	}
+	if cleared {
+		t.Fatal("deleting another environment cleared the active environment")
+	}
+	envID, endpoint, secret, _, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment: %v", err)
+	}
+	if envID != "env-active" || endpoint != "active:443" || secret != "active-secret" {
+		t.Fatalf("active credentials changed to %q %q %q", envID, endpoint, secret)
+	}
+
+	cleared, err = ClearEnvironmentForEnvironment("env-active")
+	if err != nil {
+		t.Fatalf("ClearEnvironmentForEnvironment active: %v", err)
+	}
+	if !cleared {
+		t.Fatal("matching active environment was not cleared")
+	}
+	envID, endpoint, secret, session, err := LoadEnvironment()
+	if err != nil {
+		t.Fatalf("LoadEnvironment after clear: %v", err)
+	}
+	if envID != "" || endpoint != "" || secret != "" || session != "" {
+		t.Fatalf("cleared credentials remain: env=%q endpoint=%q secret=%q session=%q",
+			envID, endpoint, secret, session)
+	}
+}
+
 func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := SaveToken("opaque-token"); err != nil {
