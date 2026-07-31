@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,109 +40,32 @@ func writeCredentials(t *testing.T, home string, value any) {
 	}
 }
 
-func requireNoEnvironmentAuthority(t *testing.T) {
-	t.Helper()
-	envID, endpoint, secret, session, err := LoadEnvironment()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envID != "" || endpoint != "" || secret != "" || session != "" {
-		t.Fatalf("legacy environment authority escaped: env=%q endpoint=%q secret=%q session=%q",
-			envID, endpoint, secret, session)
-	}
-	accounts, err := ListAccounts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(accounts) != 1 || accounts[0].EnvID != "" {
-		t.Fatalf("legacy environment exposed by ListAccounts: %+v", accounts)
-	}
-}
-
-// Flat credentials predate the control-plane marker. Their common account
-// state remains usable, but their environment must never cross into v2.
-func TestMigrateFlatV1ToV3DropsEnvironmentAuthority(t *testing.T) {
-	home := isolateHome(t)
-	tok := jwtFor("old@acme.test")
-	writeCredentials(t, home, map[string]any{
-		"token":         tok,
-		"api_url":       "https://api.example.test",
-		"env_id":        "env-1",
-		"endpoint":      "https://old.example.test",
-		"secret":        "old-secret",
-		"session_token": "old-session",
-	})
-
-	if got, _ := LoadToken(); got != tok {
-		t.Fatal("migrated token mismatch")
-	}
-	if got := LoadAPIURL(); got != "https://api.example.test" {
-		t.Fatalf("migrated API URL = %q", got)
-	}
-	if ActiveEmail() != "old@acme.test" {
-		t.Fatalf("active = %q, want old@acme.test", ActiveEmail())
-	}
-	requireNoEnvironmentAuthority(t)
-
-	// A subsequent common-state write persists the sanitized v3 shape.
-	if err := SaveToken(tok); err != nil {
-		t.Fatal(err)
-	}
-	s, err := loadStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Version != storeVersion {
-		t.Fatalf("store version = %d, want %d", s.Version, storeVersion)
-	}
-	requireNoEnvironmentAuthority(t)
-}
-
-// Even an injected v2-looking marker is not authoritative in schema 2,
-// because that schema never defined the generation boundary.
-func TestMigrateSchema2ToV3DropsEnvironmentAuthority(t *testing.T) {
-	home := isolateHome(t)
-	tok := jwtFor("schema2@acme.test")
-	writeCredentials(t, home, map[string]any{
-		"version": 2,
-		"active":  "schema2@acme.test",
-		"api_url": "https://api.example.test",
-		"accounts": map[string]any{
-			"schema2@acme.test": map[string]any{
-				"email":                 "schema2@acme.test",
-				"token":                 tok,
-				"env_id":                "env-schema2",
-				"endpoint":              "https://old.example.test",
-				"secret":                "old-secret",
-				"session_token":         "old-session",
+func TestRetiredCredentialSchemasAreRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{name: "flat", value: map[string]any{
+			"token": jwtFor("old@acme.test"), "api_url": "https://api.example.test",
+		}},
+		{name: "schema_two", value: map[string]any{
+			"version": 2, "active": "old@acme.test",
+			"accounts": map[string]any{"old@acme.test": map[string]any{
+				"email": "old@acme.test", "token": jwtFor("old@acme.test"),
 				"control_plane_version": "v2",
-			},
-		},
-	})
-
-	if got, _ := LoadToken(); got != tok {
-		t.Fatal("schema2 token mismatch")
-	}
-	if got := LoadAPIURL(); got != "https://api.example.test" {
-		t.Fatalf("schema2 API URL = %q", got)
-	}
-	if ActiveEmail() != "schema2@acme.test" {
-		t.Fatalf("active = %q", ActiveEmail())
-	}
-	requireNoEnvironmentAuthority(t)
-
-	// Session writes cannot turn a migrated account back into an environment.
-	if err := SaveSessionToken("new-session"); err != nil {
-		t.Fatal(err)
-	}
-	requireNoEnvironmentAuthority(t)
-	s, err := loadStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := s.Accounts["schema2@acme.test"]
-	if s.Version != storeVersion || a == nil || a.Token != tok || a.Email != "schema2@acme.test" {
-		t.Fatalf("safe schema2 account state was not preserved: version=%d account=%+v", s.Version, a)
+			}},
+		}},
+		{name: "future_schema", value: map[string]any{
+			"version": 99, "accounts": map[string]any{},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			writeCredentials(t, home, tc.value)
+			if _, err := LoadToken(); err == nil || !strings.Contains(err.Error(), "log in again") {
+				t.Fatalf("retired schema error = %v, want login requirement", err)
+			}
+		})
 	}
 }
 
@@ -152,10 +76,9 @@ func TestStoreRequiresExactSchemaAndV2EnvironmentMarker(t *testing.T) {
 		marker  string
 	}{
 		{name: "unstamped", version: storeVersion},
-		{name: "v1_marker", version: storeVersion, marker: "v1"},
+		{name: "retired_marker", version: storeVersion, marker: "retired"},
 		{name: "future_marker", version: storeVersion, marker: "v3"},
 		{name: "unknown_marker", version: storeVersion, marker: "unknown"},
-		{name: "unknown_schema_with_v2_marker", version: 99, marker: "v2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := isolateHome(t)
@@ -176,7 +99,14 @@ func TestStoreRequiresExactSchemaAndV2EnvironmentMarker(t *testing.T) {
 				"accounts": map[string]any{"ambiguous@acme.test": account},
 			})
 
-			requireNoEnvironmentAuthority(t)
+			envID, endpoint, secret, session, err := LoadEnvironment()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if envID != "" || endpoint != "" || secret != "" || session != "" {
+				t.Fatalf("unsupported environment authority escaped: %q %q %q %q",
+					envID, endpoint, secret, session)
+			}
 			saved, err := SaveSessionTokenForEnvironment(
 				"env-ambiguous", "old-secret", "old-session", "replacement-session",
 			)

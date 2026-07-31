@@ -5,10 +5,8 @@ package agentd.v1;
 option go_package = "github.com/agend-sh/daemon/proto/agentd/v1;agentdv1";
 
 // AgentService is the gRPC API exposed by an environment execution backend.
-// V1 serves it from agentd inside the microVM. V2 serves it from the isolated
-// host worker, which forwards bounded primitive operations to the guest shim.
-// The client sends commands and gets results without depending on the backend
-// generation.
+// The isolated host worker serves it and forwards bounded primitive operations
+// to the guest shim. The client never connects to a process inside the guest.
 service AgentService {
 
   // --- Shell ---

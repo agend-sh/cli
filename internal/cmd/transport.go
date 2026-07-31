@@ -188,7 +188,7 @@ func mutationRetrySafe(idempotent bool, err error) bool {
 }
 
 // backoff returns a simple linear-ish backoff duration for retry attempt n.
-// Chosen to cover the typical window for cloudflared respawn + trycloudflare
+// Chosen to cover the typical window for cloudflared respawn + named-tunnel
 // DNS propagation (~15-20s).
 func backoff(attempt int) time.Duration {
 	switch attempt {
