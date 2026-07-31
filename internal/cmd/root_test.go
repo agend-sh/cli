@@ -46,13 +46,13 @@ func startCountingGRPCServer(t *testing.T) (*countingListener, string) {
 // The command boundary must ignore environment authority from the previous
 // credential schema. This exercises dialDaemon rather than only asserting the
 // auth package's decoded values: the safe caller address is connected, while
-// the stored legacy endpoint is never touched.
+// the stored retired-generation endpoint is never touched.
 func TestDialDaemonDoesNotReuseSchema2Endpoint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	legacyListener, legacyAddr := startCountingGRPCServer(t)
+	retiredListener, retiredAddr := startCountingGRPCServer(t)
 	safeListener, safeAddr := startCountingGRPCServer(t)
 
 	credentials := map[string]any{
@@ -63,7 +63,7 @@ func TestDialDaemonDoesNotReuseSchema2Endpoint(t *testing.T) {
 				"email":                 "old@acme.test",
 				"token":                 "old-control-plane-token",
 				"env_id":                "env-old",
-				"endpoint":              legacyAddr,
+				"endpoint":              retiredAddr,
 				"secret":                "old-one-time-secret",
 				"session_token":         "old-session-token",
 				"control_plane_version": "v2",
@@ -95,7 +95,7 @@ func TestDialDaemonDoesNotReuseSchema2Endpoint(t *testing.T) {
 	if got := safeListener.accepts.Load(); got == 0 {
 		t.Fatal("dialDaemon did not connect to the caller-provided safe address")
 	}
-	if got := legacyListener.accepts.Load(); got != 0 {
+	if got := retiredListener.accepts.Load(); got != 0 {
 		t.Fatalf("dialDaemon connected to schema2 endpoint %d time(s)", got)
 	}
 }

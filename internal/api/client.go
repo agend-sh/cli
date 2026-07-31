@@ -262,10 +262,8 @@ func (c *Client) ResolveDomainCredentials(zone string) (*DomainCredentials, erro
 
 // HTTP helpers
 
-// doControlPlaneJSON sends a request to the host-shim control-plane API. V2 is
-// deliberately a hard boundary: a failed v2 request is returned to the caller
-// and is never retried against an unversioned (v1) lifecycle route. Old CLI
-// releases continue to address v1 while the two control planes coexist.
+// doControlPlaneJSON sends a request to the current host-shim control-plane
+// API. A failed request is returned directly; there is no unversioned fallback.
 func doControlPlaneJSON[T any](c *Client, method, path string, body any) (*T, error) {
 	return doControlPlaneJSONContext[T](context.Background(), c, method, path, body)
 }

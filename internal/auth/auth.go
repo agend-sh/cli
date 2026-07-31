@@ -33,15 +33,14 @@ type account struct {
 	ControlPlaneVersion string `json:"control_plane_version,omitempty"`
 }
 
-// store is the on-disk credentials file (v3): multiple accounts keyed by email
+// store is the on-disk credentials file: multiple accounts keyed by email
 // plus a pointer to the active one, so `agend login` adds-not-clobbers and you
-// can switch accounts without losing sessions. V3 also binds environment
-// credentials to their control-plane generation. Older stores retain login
-// state but never carry environment authority into the v2 CLI.
+// can switch accounts without losing sessions. The schema binds environment
+// credentials to the only supported control-plane generation.
 type store struct {
 	Version  int                 `json:"version"`
 	Active   string              `json:"active,omitempty"`
-	Accounts map[string]*account `json:"accounts,omitempty"`
+	Accounts map[string]*account `json:"accounts"`
 	APIURL   string              `json:"api_url,omitempty"`
 }
 
@@ -65,7 +64,7 @@ func configPath() (string, error) {
 }
 
 // accountKey derives the map key for a token: its JWT email claim, or
-// "default" for an opaque/unparseable token (so migration still works).
+// "default" for an opaque/unparseable token.
 func accountKey(token string) string {
 	if email, ok := TokenEmail(token); ok {
 		return email
@@ -92,20 +91,18 @@ func hasV2Environment(a *account) bool {
 }
 
 // sanitizeEnvironmentAuthority enforces the generation boundary at the store
-// edge. A v2-looking marker inside an older schema is not trusted: schema 3 was
-// the first format that defined this marker, so both must match exactly.
-func sanitizeEnvironmentAuthority(s *store, sourceVersion int) {
-	trustedSchema := sourceVersion == storeVersion
+// edge. Only an exact current-generation marker carries environment authority.
+func sanitizeEnvironmentAuthority(s *store) {
 	for _, a := range s.Accounts {
-		if !trustedSchema || !hasV2Environment(a) {
+		if !hasV2Environment(a) {
 			clearEnvironmentAuthority(a)
 		}
 	}
-	s.Version = storeVersion
 }
 
-// loadStore reads the credentials file, retaining only safe common login state
-// from older formats. A missing file yields an empty store (not an error).
+// loadStore reads the credentials file. Retired schemas are rejected instead
+// of migrated: users must log in again so no old authority crosses generations.
+// A missing file yields an empty store (not an error).
 func loadStore() (*store, error) {
 	path, err := configPath()
 	if err != nil {
@@ -123,29 +120,11 @@ func loadStore() (*store, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
-	if s.Accounts != nil {
-		sanitizeEnvironmentAuthority(&s, s.Version)
-		return &s, nil
+	if s.Version != storeVersion || s.Accounts == nil {
+		return nil, fmt.Errorf("unsupported credentials schema: log in again")
 	}
-
-	// V1 flat single-account data predates an explicit control-plane marker.
-	// Preserve the token/account and API URL, but discard its environment
-	// endpoint and credentials instead of guessing which generation owns them.
-	var legacy struct {
-		Token  string `json:"token"`
-		APIURL string `json:"api_url"`
-	}
-	_ = json.Unmarshal(data, &legacy)
-	migrated := &store{Version: storeVersion, Accounts: map[string]*account{}, APIURL: legacy.APIURL}
-	if legacy.Token != "" {
-		key := accountKey(legacy.Token)
-		migrated.Accounts[key] = &account{
-			Email: key,
-			Token: legacy.Token,
-		}
-		migrated.Active = key
-	}
-	return migrated, nil
+	sanitizeEnvironmentAuthority(&s)
+	return &s, nil
 }
 
 func saveStore(s *store) error {

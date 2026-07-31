@@ -4,10 +4,8 @@ CLI and MCP server for [agend.sh](https://agend.sh) -- remote dev environments e
 
 `agend mcp` acts as a stdio MCP server: it receives JSON-RPC tool calls from
 the agent, translates them to gRPC requests, and sends them through a WebSocket
-tunnel to the environment's generation-selected execution backend. V1 serves
-that API from agentd inside Firecracker; V2 terminates it in an isolated
-per-VM host worker and forwards only bounded primitives to an untrusted guest
-shim.
+tunnel to an isolated per-VM host worker. The worker forwards only bounded
+primitives to an untrusted guest shim.
 
 ## Install
 
@@ -222,20 +220,19 @@ agend mcp
   |  gRPC over WebSocket (wss://)
   |  through Cloudflare Tunnel
   v
-generation-selected environment endpoint
-  |-- V1: agentd inside Firecracker
-  `-- V2: isolated host worker -> bounded vsock -> untrusted guest shim
+current environment endpoint
+  `-- isolated host worker -> bounded vsock -> untrusted guest shim
 ```
 
 **Transport details:**
 
 1. The agent communicates with `agend mcp` over stdio using MCP's JSON-RPC protocol.
 2. `agend mcp` maintains a pool of gRPC connections (`internal/mcp/conn.go`), one per environment.
-3. For Cloudflare tunnel endpoints (`*.trycloudflare.com` or `*.agend.sh`), gRPC runs over a WebSocket connection (`internal/grpc/proxy.go`). The `nhooyr.io/websocket` library handles Cloudflare's HTTP/1.1 upgrade.
+3. For current named environment-tunnel endpoints (`et-*.agend.sh`), gRPC runs over a WebSocket connection (`internal/grpc/proxy.go`). The `nhooyr.io/websocket` library handles Cloudflare's HTTP/1.1 upgrade.
 4. For direct endpoints (dev/local), gRPC connects over plain TCP.
 5. Auth uses a one-time secret (from env creation) exchanged for a session
    token on first RPC. The session token is persisted locally and reused
-   across CLI invocations. In V2, the exchange terminates in the host worker
+   across CLI invocations. The exchange terminates in the host worker
    and no authentication secret is placed in the guest.
 
 **Retry and reconnection** (`internal/mcp/conn.go`, `internal/mcp/errors.go`):
