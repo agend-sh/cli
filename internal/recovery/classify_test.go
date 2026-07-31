@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -24,6 +25,30 @@ func TestClassify_GRPCStatusCodes(t *testing.T) {
 		err := status.Error(c.code, "x")
 		if got := Classify(err); got != c.want {
 			t.Errorf("Classify(%v) = %v, want %v", c.code, got, c.want)
+		}
+	}
+}
+
+func TestClassifyText_GRPCStatusCodes(t *testing.T) {
+	cases := []struct {
+		message string
+		want    Category
+	}{
+		{"task_output failed: rpc error: code = NotFound desc = task not found: task_1", Fatal},
+		{"file_download failed: rpc error: code = PermissionDenied desc = access denied", Fatal},
+		{"exec failed: rpc error: code = InvalidArgument desc = invalid mode", Fatal},
+		{"resize failed: rpc error: code = FailedPrecondition desc = no active session", Fatal},
+		{"exec failed: rpc error: code = Unauthenticated desc = invalid session token", Auth},
+		{"exec failed: rpc error: code = Unavailable desc = guest unavailable", Transient},
+		{
+			"task_output failed: rpc error: code = Unavailable desc = " +
+				"guest task output: rpc error: code = NotFound desc = task not found",
+			Transient,
+		},
+	}
+	for _, test := range cases {
+		if got := ClassifyText(test.message); got != test.want {
+			t.Errorf("ClassifyText(%q) = %v, want %v", test.message, got, test.want)
 		}
 	}
 }
@@ -57,9 +82,42 @@ func TestClassifyText_WindowsSocketErrors(t *testing.T) {
 	}
 }
 
+func TestIsUnauthenticatedTextRequiresGRPCRejection(t *testing.T) {
+	if !IsUnauthenticatedText("exec failed: rpc error: code = Unauthenticated desc = invalid session token") {
+		t.Fatal("exact gRPC Unauthenticated status was not recognized")
+	}
+	for _, unsafe := range []string{
+		"status code 401 Unauthorized",
+		"rpc error: code = Unavailable desc = Cloudflare API status 401",
+		"rpc error: code = Unavailable desc = guest said rpc error: code = Unauthenticated",
+		"invalid session token",
+	} {
+		if IsUnauthenticatedText(unsafe) {
+			t.Fatalf("non-authoritative auth text was treated as safe to replay: %q", unsafe)
+		}
+	}
+}
+
+func TestIsUnauthenticatedRequiresTypedGRPCRejection(t *testing.T) {
+	typed := status.Error(codes.Unauthenticated, "invalid session token")
+	if !IsUnauthenticated(fmt.Errorf("exec failed: %w", typed)) {
+		t.Fatal("wrapped typed gRPC Unauthenticated status was not recognized")
+	}
+	for _, unsafe := range []error{
+		errors.New("status code 401 Unauthorized"),
+		errors.New("invalid session token"),
+		errors.New("rpc error: code = Unauthenticated desc = invalid session token"),
+		status.Error(codes.Unavailable, "upstream returned 401"),
+	} {
+		if IsUnauthenticated(unsafe) {
+			t.Fatalf("ambiguous auth error was treated as safe to replay: %v", unsafe)
+		}
+	}
+}
+
 func TestIsIdempotent(t *testing.T) {
 	// Read-only ops are retryable.
-	for _, tool := range []string{"port_list", "file_download", "shell_task_output", "env_status"} {
+	for _, tool := range []string{"port_list", "file_download", "shell_task_output", "shell_resize", "env_status"} {
 		if !IsIdempotent(tool) {
 			t.Errorf("%s should be idempotent", tool)
 		}

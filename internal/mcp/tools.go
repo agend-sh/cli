@@ -36,7 +36,10 @@ When interactive=true:
 Interactive workflow:
 1. shell_exec(command="python3", interactive=true) → "awaiting_input"
 2. shell_send_raw(input="print('hello')\n") → shows output + "awaiting_input"
-3. shell_send_raw(input="exit()\n") → "completed"
+3. shell_send_raw(input="exit()\n") → normally "completed"
+4. If step 3 briefly returns "awaiting_input" because the PTY snapshot raced
+   process exit, call shell_send_raw(input="") to refresh the same session;
+   it will report "completed" once the child-exit event is observed.
 
 To close an interactive session:
 - Send the app's quit command via shell_send_raw (e.g. "exit()\n", "/exit\n", ":q!\n")
@@ -95,6 +98,25 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 					"input":       map[string]any{"type": "string", "description": "Raw bytes sent directly to PTY (include \\n for newline)"},
 				},
 				"required": []string{"environment", "input"},
+			},
+		},
+		{
+			"name":        "shell_resize",
+			"description": "Resize the active interactive PTY. Use this when the client viewport changes while driving a TUI or REPL.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment": envProp,
+					"columns": map[string]any{
+						"type": "integer", "minimum": 1, "maximum": 1000,
+						"description": "Terminal width in columns (1-1000)",
+					},
+					"rows": map[string]any{
+						"type": "integer", "minimum": 1, "maximum": 1000,
+						"description": "Terminal height in rows (1-1000)",
+					},
+				},
+				"required": []string{"environment", "columns", "rows"},
 			},
 		},
 		{

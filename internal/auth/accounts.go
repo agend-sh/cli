@@ -21,10 +21,14 @@ func ListAccounts() ([]AccountInfo, error) {
 	}
 	out := make([]AccountInfo, 0, len(s.Accounts))
 	for email, a := range s.Accounts {
+		envID := ""
+		if hasV2Environment(a) {
+			envID = a.EnvID
+		}
 		out = append(out, AccountInfo{
 			Email:   email,
 			Active:  email == s.Active,
-			EnvID:   a.EnvID,
+			EnvID:   envID,
 			Expired: TokenExpired(a.Token),
 		})
 	}
@@ -44,6 +48,8 @@ func ActiveEmail() string {
 // SwitchAccount makes email the active account. Errors if no such account is
 // stored (the caller should log in to it first).
 func SwitchAccount(email string) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return err
@@ -58,6 +64,8 @@ func SwitchAccount(email string) error {
 // RemoveAccount deletes a stored account. If it was active, another remaining
 // account (if any) becomes active.
 func RemoveAccount(email string) error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s, err := loadStore()
 	if err != nil {
 		return err
@@ -78,6 +86,8 @@ func RemoveAccount(email string) error {
 
 // RemoveAllAccounts clears every stored account (logout --all).
 func RemoveAllAccounts() error {
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	s := &store{Version: storeVersion, Accounts: map[string]*account{}}
 	return saveStore(s)
 }

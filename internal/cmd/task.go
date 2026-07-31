@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -19,7 +18,7 @@ func newTaskOutputCmd() *cobra.Command {
 		Short: "Get output of a background task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			var resp *pb.TaskOutputResponse
 			err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.TaskOutput(ctx, &pb.TaskOutputRequest{
@@ -62,7 +61,9 @@ func newTaskStopCmd() *cobra.Command {
 		Short: "Stop a running background task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
+			// Host-worker task stop is tombstone-idempotent: replay targets the
+			// same opaque task ID and a completed tombstone returns success.
 			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
 				if _, err := client.Agent.TaskStop(ctx, &pb.TaskStopRequest{
 					TaskId: args[0],

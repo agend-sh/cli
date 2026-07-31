@@ -2,7 +2,12 @@
 
 CLI and MCP server for [agend.sh](https://agend.sh) -- remote dev environments exposed exclusively via MCP protocol. Your AI agent gets a full isolated Linux box (shell, files, networking, interactive apps) without knowing anything about the underlying infrastructure.
 
-`agend mcp` acts as a stdio MCP server: it receives JSON-RPC tool calls from the agent, translates them to gRPC requests, and sends them through a WebSocket tunnel to `agentd` running inside a Firecracker microVM.
+`agend mcp` acts as a stdio MCP server: it receives JSON-RPC tool calls from
+the agent, translates them to gRPC requests, and sends them through a WebSocket
+tunnel to the environment's generation-selected execution backend. V1 serves
+that API from agentd inside Firecracker; V2 terminates it in an isolated
+per-VM host worker and forwards only bounded primitives to an untrusted guest
+shim.
 
 ## Install
 
@@ -71,7 +76,7 @@ Credentials (and any saved accounts) are stored in `~/.config/agend/credentials.
 
 | Command | Description |
 |---------|-------------|
-| `agend env create` | Provision a new environment (boots a microVM from warm pool) |
+| `agend env create` | Provision a new environment using its selected lifecycle generation |
 | `agend env list` | List environments with state, tier, and endpoint |
 | `agend env status [env-id]` | Show detailed environment info |
 | `agend env wake [env-id]` | Wake a sleeping environment (restores from snapshot) |
@@ -104,10 +109,11 @@ and releases on exit — so an AI agent shares a team box seamlessly.
 |---------|-------------|
 | `agend exec <cmd>` | Execute a command remotely |
 | `agend input <text>` | Send input to a process waiting for input |
+| `agend resize <columns> <rows>` | Resize the active interactive PTY |
 | `agend interrupt` | Send SIGINT (Ctrl+C) to the running command |
-| `agend ping` | Check connectivity to agentd |
+| `agend ping` | Check connectivity to the environment execution backend |
 
-`exec` supports `--background` (returns task ID), `--interactive` (PTY mode for TUIs), `--timeout`, `--tail`, and `--head`.
+`exec` supports `--background` (returns task ID), `--interactive` (PTY mode for TUIs), `--timeout`, `--tail`, and `--head`. During an interactive call, terminal resize events are forwarded automatically (SIGWINCH on Unix and size polling on Windows).
 
 ### Files (direct gRPC)
 
@@ -165,18 +171,19 @@ The MCP server manages a **connection pool** -- each environment gets its own gR
 | `env_status` | Get environment state, tier, endpoint, timestamps |
 | `env_wake` | Wake a sleeping environment |
 
-**Shell** (routed to agentd via gRPC):
+**Shell** (routed to the selected environment backend via gRPC):
 
 | Tool | Description |
 |------|-------------|
 | `shell_exec` | Execute commands (supports timeout, interactive, background, head/tail truncation) |
 | `shell_provide_input` | Send text input to a waiting process (appends newline) |
 | `shell_send_raw` | Send raw bytes to PTY (vim keystrokes, REPL input, no newline) |
+| `shell_resize` | Resize the active interactive PTY |
 | `shell_interrupt` | Send SIGINT to interrupt the running command |
 | `shell_task_output` | Get output of a background task |
 | `shell_task_stop` | Stop a background task |
 
-**Files** (routed to agentd via gRPC):
+**Files** (routed to the selected environment backend via gRPC):
 
 | Tool | Description |
 |------|-------------|
@@ -215,7 +222,9 @@ agend mcp
   |  gRPC over WebSocket (wss://)
   |  through Cloudflare Tunnel
   v
-agentd (inside Firecracker microVM)
+generation-selected environment endpoint
+  |-- V1: agentd inside Firecracker
+  `-- V2: isolated host worker -> bounded vsock -> untrusted guest shim
 ```
 
 **Transport details:**
@@ -224,7 +233,10 @@ agentd (inside Firecracker microVM)
 2. `agend mcp` maintains a pool of gRPC connections (`internal/mcp/conn.go`), one per environment.
 3. For Cloudflare tunnel endpoints (`*.trycloudflare.com` or `*.agend.sh`), gRPC runs over a WebSocket connection (`internal/grpc/proxy.go`). The `nhooyr.io/websocket` library handles Cloudflare's HTTP/1.1 upgrade.
 4. For direct endpoints (dev/local), gRPC connects over plain TCP.
-5. Auth uses a one-time secret (from env creation) exchanged for a session token on first RPC. The session token is persisted locally and reused across CLI invocations.
+5. Auth uses a one-time secret (from env creation) exchanged for a session
+   token on first RPC. The session token is persisted locally and reused
+   across CLI invocations. In V2, the exchange terminates in the host worker
+   and no authentication secret is placed in the guest.
 
 **Retry and reconnection** (`internal/mcp/conn.go`, `internal/mcp/errors.go`):
 
