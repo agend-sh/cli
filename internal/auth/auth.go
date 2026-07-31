@@ -453,6 +453,32 @@ func ClearEnvironment() error {
 	})
 }
 
+// ClearEnvironmentForEnvironment clears authority only when envID is still the
+// active environment. An explicit delete may target a different environment;
+// it must not erase a selection made before or during that request.
+func ClearEnvironmentForEnvironment(envID string) (bool, error) {
+	if envID == "" {
+		return false, errors.New("empty environment ID")
+	}
+
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	s, err := loadStore()
+	if err != nil {
+		return false, err
+	}
+	a := activeAccount(s)
+	if !hasV2Environment(a) || a.EnvID != envID {
+		return false, nil
+	}
+	clearEnvironmentAuthority(a)
+	if err := saveStore(s); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SaveAPIURL stores a custom API base URL (for dev/testing). It is global
 // (not per-account).
 func SaveAPIURL(url string) error {

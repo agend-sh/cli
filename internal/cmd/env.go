@@ -400,7 +400,9 @@ func newEnvDeleteCmd() *cobra.Command {
 				return fmt.Errorf("delete failed: %w", err)
 			}
 
-			auth.ClearEnvironment()
+			if _, err := auth.ClearEnvironmentForEnvironment(resp.EnvID); err != nil {
+				return fmt.Errorf("clear deleted environment: %w", err)
+			}
 
 			fmt.Printf("Environment %s deleted.\n", resp.EnvID)
 			return nil
