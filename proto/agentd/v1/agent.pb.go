@@ -124,9 +124,7 @@ type ExecResponse struct {
 	Truncated  bool   `protobuf:"varint,9,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	TotalLines uint32 `protobuf:"varint,10,opt,name=total_lines,json=totalLines,proto3" json:"total_lines,omitempty"`
 	ShownLines uint32 `protobuf:"varint,11,opt,name=shown_lines,json=shownLines,proto3" json:"shown_lines,omitempty"`
-	// Reports interactive session readiness for the
-	// active PTY. An interactive timeout can still return awaiting_input with
-	// this false so TUI and REPL sessions remain driveable.
+	// True when the active interactive session is ready to receive input.
 	InputWait     bool `protobuf:"varint,12,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -298,7 +296,7 @@ type InputResponse struct {
 	Stderr        string                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
 	PromptType    string                 `protobuf:"bytes,5,opt,name=prompt_type,json=promptType,proto3" json:"prompt_type,omitempty"`
 	PromptText    string                 `protobuf:"bytes,6,opt,name=prompt_text,json=promptText,proto3" json:"prompt_text,omitempty"`
-	InputWait     bool                   `protobuf:"varint,7,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"` // interactive session readiness
+	InputWait     bool                   `protobuf:"varint,7,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"` // interactive session is ready for input
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

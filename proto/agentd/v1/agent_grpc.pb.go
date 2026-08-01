@@ -49,8 +49,8 @@ const (
 type AgentServiceClient interface {
 	// Execute a command. Returns stdout/stderr for completed commands.
 	// With interactive=true the daemon runs the command under a PTY and can
-	// return status "awaiting_input" when the process blocks for input (PTY,
-	// session readiness handled internally). A non-interactive
+	// return status "awaiting_input" when the session is ready for more input.
+	// A non-interactive
 	// exec has no stdin: a command that waits for input runs to the timeout and
 	// returns status "timeout" — re-run with interactive=true to drive it.
 	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error)
@@ -288,8 +288,8 @@ func (c *agentServiceClient) CompleteWake(ctx context.Context, in *CompleteWakeR
 type AgentServiceServer interface {
 	// Execute a command. Returns stdout/stderr for completed commands.
 	// With interactive=true the daemon runs the command under a PTY and can
-	// return status "awaiting_input" when the process blocks for input (PTY,
-	// session readiness handled internally). A non-interactive
+	// return status "awaiting_input" when the session is ready for more input.
+	// A non-interactive
 	// exec has no stdin: a command that waits for input runs to the timeout and
 	// returns status "timeout" — re-run with interactive=true to drive it.
 	Exec(context.Context, *ExecRequest) (*ExecResponse, error)

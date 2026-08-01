@@ -13,8 +13,8 @@ service AgentService {
 
   // Execute a command. Returns stdout/stderr for completed commands.
   // With interactive=true the daemon runs the command under a PTY and can
-  // return status "awaiting_input" when the process blocks for input (PTY,
-  // session readiness handled internally). A non-interactive
+  // return status "awaiting_input" when the session is ready for more input.
+  // A non-interactive
   // exec has no stdin: a command that waits for input runs to the timeout and
   // returns status "timeout" — re-run with interactive=true to drive it.
   rpc Exec(ExecRequest) returns (ExecResponse);
@@ -117,9 +117,7 @@ message ExecResponse {
   uint32 total_lines = 10;
   uint32 shown_lines = 11;
 
-  // Reports interactive session readiness for the
-  // active PTY. An interactive timeout can still return awaiting_input with
-  // this false so TUI and REPL sessions remain driveable.
+  // True when the active interactive session is ready to receive input.
   bool input_wait = 12;
 }
 
@@ -134,7 +132,7 @@ message InputResponse {
   string stderr = 4;
   string prompt_type = 5;
   string prompt_text = 6;
-  bool input_wait = 7;            // interactive session readiness
+  bool input_wait = 7;            // interactive session is ready for input
 }
 
 message RawInputRequest {
