@@ -309,8 +309,8 @@ func TestNeedsTCPTunnel(t *testing.T) {
 		addr string
 		want bool
 	}{
-		{"https://abc-def.trycloudflare.com", true},     // legacy quick tunnel
-		{"abc.trycloudflare.com:443", true},             // quick tunnel with port
+		{"https://abc-def.trycloudflare.com", false},    // retired quick tunnel
+		{"abc.trycloudflare.com:443", false},            // retired quick tunnel with port
 		{"https://et-srv-hetzner-01-03.agend.sh", true}, // named pool tunnel
 		{"et-srv-hetzner-01-03.agend.sh:443", true},     // named pool tunnel + port
 		{"https://srv-hetzner-01-ctl.agend.sh", false},  // control plane (HTTP, not a TCP env tunnel)

@@ -101,15 +101,11 @@ func Dial(ctx context.Context, addr, secret, sessionToken string) (*Client, erro
 	return c, nil
 }
 
-// needsTCPTunnel returns true if the address is a Cloudflare TCP-mode tunnel
-// that requires WebSocket proxying. Covers both the legacy trycloudflare quick
-// tunnels and the named-tunnel pool hostnames (et-<server>-NN.agend.sh, ADR-019).
+// needsTCPTunnel returns true for a current named-tunnel-pool hostname that
+// requires WebSocket proxying (et-<server>-NN.agend.sh, ADR-019).
 func needsTCPTunnel(addr string) bool {
 	lower := strings.ToLower(addr)
 	lower = strings.TrimPrefix(lower, "https://")
-	if strings.HasSuffix(lower, ".trycloudflare.com") || strings.Contains(lower, ".trycloudflare.com:") {
-		return true
-	}
 	// Named env-tunnel pool hostnames: et-*.agend.sh (TCP/gRPC over a named tunnel).
 	return strings.HasPrefix(lower, "et-") && (strings.HasSuffix(lower, ".agend.sh") || strings.Contains(lower, ".agend.sh:"))
 }
