@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,40 @@ import (
 	"testing"
 	"time"
 )
+
+func TestRecordFunnelEventSendsOnlyActivationMetadata(t *testing.T) {
+	var got FunnelEventRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/events" {
+			t.Fatalf("path = %q, want /v2/events", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accepted":true,"first":true}`))
+	}))
+	defer server.Close()
+
+	resp, err := New(server.URL, "token").RecordFunnelEventContext(
+		context.Background(),
+		FunnelEventRequest{
+			Stage: "mcp_first_success", Tool: "shell_exec", ClientVersion: "v2.0.0",
+		},
+	)
+	if err != nil {
+		t.Fatalf("RecordFunnelEventContext: %v", err)
+	}
+	if !resp.Accepted || !resp.First {
+		t.Fatalf("response = %+v", resp)
+	}
+	want := FunnelEventRequest{
+		Stage: "mcp_first_success", Tool: "shell_exec", ClientVersion: "v2.0.0",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("request = %+v, want %+v", got, want)
+	}
+}
 
 func TestValidateBaseURL(t *testing.T) {
 	valid := []string{
@@ -98,7 +133,7 @@ func TestAuthenticationRoutesRemainUnversioned(t *testing.T) {
 }
 
 func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
-	requests := make(chan string, 21)
+	requests := make(chan string, 22)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.Method + " " + r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
@@ -118,6 +153,11 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		{"stop environment", "DELETE /v2/environments/env-1", func() error { return responseError(client.StopEnvironment("env-1")) }},
 		{"wake environment", "POST /v2/environments/env-1/wake", func() error { return responseError(client.WakeEnvironment("env-1")) }},
 		{"reauth environment", "POST /v2/environments/env-1/reauth", func() error { return responseError(client.ReauthEnvironment("env-1")) }},
+		{"record funnel event", "POST /v2/events", func() error {
+			return responseError(client.RecordFunnelEventContext(context.Background(), FunnelEventRequest{
+				Stage: "mcp_first_success", Tool: "shell_exec", ClientVersion: "v2.0.0",
+			}))
+		}},
 		{"add domain", "POST /v2/domains", func() error { return responseError(client.AddDomain("example.com", "token")) }},
 		{"list domains", "GET /v2/domains", func() error { return responseError(client.ListDomains()) }},
 		{"remove domain", "DELETE /v2/domains/domain-1", func() error { return responseError(client.RemoveDomain("domain-1")) }},

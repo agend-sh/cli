@@ -218,6 +218,23 @@ func (c *Client) ReauthEnvironmentContext(ctx context.Context, envID string) (*R
 	return doControlPlaneJSONContext[ReauthResponse](ctx, c, "POST", "/environments/"+envID+"/reauth", nil)
 }
 
+// Funnel events contain activation metadata only. MCP callers must never put
+// tool arguments or output in this request.
+type FunnelEventRequest struct {
+	Stage         string `json:"stage"`
+	Tool          string `json:"tool,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
+}
+
+type FunnelEventResponse struct {
+	Accepted bool `json:"accepted"`
+	First    bool `json:"first"`
+}
+
+func (c *Client) RecordFunnelEventContext(ctx context.Context, event FunnelEventRequest) (*FunnelEventResponse, error) {
+	return doControlPlaneJSONContext[FunnelEventResponse](ctx, c, "POST", "/events", event)
+}
+
 // Domains
 
 type AddDomainRequest struct {
