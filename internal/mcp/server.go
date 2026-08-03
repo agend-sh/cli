@@ -56,6 +56,7 @@ type Server struct {
 
 	inflightMu sync.Mutex
 	inflight   map[string]context.CancelFunc // in-flight tools/call by request id
+	funnelOnce sync.Once
 }
 
 func NewServer(apiClient *api.Client, version string) *Server {
@@ -187,6 +188,9 @@ func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 		}
 
 		result, isErr := s.callTool(ctx, params.Name, params.Arguments)
+		if !isErr && isRemoteMCPTool(params.Name) {
+			s.recordFirstMCPSuccess(params.Name)
+		}
 		s.sendResult(req.ID, map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": result},
@@ -200,6 +204,36 @@ func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 	default:
 		s.sendError(req.ID, -32601, fmt.Sprintf("method not found: %s", req.Method))
 	}
+}
+
+func isRemoteMCPTool(name string) bool {
+	switch name {
+	case "list_environments", "env_create", "env_status", "env_wake", "reload_config":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Server) recordFirstMCPSuccess(tool string) {
+	s.funnelOnce.Do(func() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			version := s.version
+			if version == "" {
+				version = "unknown"
+			}
+			_, err := s.api.RecordFunnelEventContext(ctx, api.FunnelEventRequest{
+				Stage:         "mcp_first_success",
+				Tool:          tool,
+				ClientVersion: version,
+			})
+			if err != nil {
+				log.Printf("agend: first-use telemetry could not be recorded: %v", err)
+			}
+		}()
+	})
 }
 
 // callTool dispatches a tool call, routing to the correct environment connection.

@@ -43,21 +43,18 @@ func newSignupCmd() *cobra.Command {
 			}
 
 			client := api.New(auth.LoadAPIURL(), "")
-			resp, err := client.Signup(email, password)
+			_, err := client.Signup(email, password)
 			if err != nil {
 				return fmt.Errorf("signup failed: %w", err)
 			}
 
-			// Signup may put the account on a waitlist (no token issued) rather
-			// than logging in immediately. Don't claim "account created" or try
-			// to store an empty token in that case.
-			if resp.Token == "" {
-				if resp.Message != "" {
-					fmt.Println(resp.Message)
-				} else {
-					fmt.Println("Account created — pending approval.")
-				}
-				return nil
+			// Signup deliberately returns the same generic response for new and
+			// existing addresses. Authenticate with the supplied credentials to
+			// enter the new account's immediately-active trial without weakening
+			// that enumeration boundary.
+			resp, err := client.Login(email, password)
+			if err != nil {
+				return fmt.Errorf("account request accepted, but login failed: %w", err)
 			}
 
 			if err := auth.SaveToken(resp.Token); err != nil {
