@@ -1,7 +1,7 @@
 package mcp
 
 // envProp is the required environment parameter added to every tool.
-var envProp = map[string]any{"type": "string", "description": "Environment ID (from list_environments)"}
+var envProp = map[string]any{"type": "string", "description": "Environment ID or name (from list_environments)"}
 
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
@@ -264,10 +264,28 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 		// ── Environment management (API only, no gRPC needed) ──
 		{
 			"name":        "env_create",
-			"description": "Create a new environment. Returns the environment ID and endpoint. The environment boots a fresh microVM from the warm pool.",
+			"description": "Create a new environment, optionally giving it a memorable name and short description. Returns the environment ID and endpoint. The environment boots a fresh microVM from the warm pool.",
 			"inputSchema": map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				"type": "object",
+				"properties": map[string]any{
+					"name":        map[string]any{"type": "string", "description": "Unique name: 2-32 lowercase letters, numbers, and hyphens"},
+					"description": map[string]any{"type": "string", "maxLength": 256, "description": "Short description of the environment's purpose"},
+				},
+			},
+		},
+		{
+			"name":        "env_update",
+			"description": "Edit an environment's user-visible name or short description.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment":       envProp,
+					"name":              map[string]any{"type": "string", "description": "Unique name: 2-32 lowercase letters, numbers, and hyphens"},
+					"description":       map[string]any{"type": "string", "maxLength": 256, "description": "Short description of the environment's purpose"},
+					"clear_name":        map[string]any{"type": "boolean", "description": "Remove the current name"},
+					"clear_description": map[string]any{"type": "boolean", "description": "Remove the current description"},
+				},
+				"required": []string{"environment"},
 			},
 		},
 		{

@@ -74,8 +74,9 @@ Credentials (and any saved accounts) are stored in `~/.config/agend/credentials.
 
 | Command | Description |
 |---------|-------------|
-| `agend env create` | Provision a new environment using its selected lifecycle generation |
-| `agend env list` | List environments with state, tier, and endpoint |
+| `agend env create [--name NAME] [--description TEXT]` | Provision and optionally describe a new environment |
+| `agend env edit [env-id] [metadata flags]` | Edit or clear an environment name and description |
+| `agend env list` | List environments with name, description, state, tier, and endpoint |
 | `agend env status [env-id]` | Show detailed environment info |
 | `agend env wake [env-id]` | Wake a sleeping environment (restores from snapshot) |
 | `agend env delete [env-id]` | Permanently delete an environment |
@@ -164,9 +165,10 @@ The MCP server manages a **connection pool** -- each environment gets its own gR
 
 | Tool | Description |
 |------|-------------|
-| `list_environments` | List environments with IDs, state, tier |
-| `env_create` | Create a new environment |
-| `env_status` | Get environment state, tier, endpoint, timestamps |
+| `list_environments` | List environments with IDs, names, descriptions, state, and tier |
+| `env_create` | Create an environment with an optional name and description |
+| `env_update` | Edit or clear an environment name and description |
+| `env_status` | Get environment metadata, state, tier, endpoint, and timestamps |
 | `env_wake` | Wake a sleeping environment |
 
 **Shell** (routed to the selected environment backend via gRPC):
