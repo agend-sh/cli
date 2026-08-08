@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/agend-sh/cli/internal/api"
@@ -56,6 +57,7 @@ func newEnvCmd() *cobra.Command {
 
 	cmd.AddCommand(newEnvListCmd())
 	cmd.AddCommand(newEnvCreateCmd())
+	cmd.AddCommand(newEnvEditCmd())
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvDeleteCmd())
 	cmd.AddCommand(newEnvWakeCmd())
@@ -235,11 +237,18 @@ func newEnvListCmd() *cobra.Command {
 			}
 
 			for _, env := range resp.Environments {
+				name := env.EnvID
+				if env.Alias != "" {
+					name = fmt.Sprintf("%s (%s)", env.EnvID, env.Alias)
+				}
 				endpoint := env.Endpoint
 				if endpoint == "" {
 					endpoint = "-"
 				}
-				fmt.Printf("%-20s %-10s %-8s %s\n", env.EnvID, env.State, env.Tier, endpoint)
+				fmt.Printf("%-36s %-10s %-8s %s\n", name, env.State, env.Tier, endpoint)
+				if env.Banner != "" {
+					fmt.Printf("  %s\n", env.Banner)
+				}
 			}
 			return nil
 		},
@@ -247,19 +256,32 @@ func newEnvListCmd() *cobra.Command {
 }
 
 func newEnvCreateCmd() *cobra.Command {
+	var name string
+	var description string
 	var profile string
-	cmd := &cobra.Command{
+	command := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new environment",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
 			if err != nil {
 				return err
 			}
+			if cmd.Flags().Changed("name") && strings.TrimSpace(name) == "" {
+				return fmt.Errorf("--name must not be empty; omit it to create an unnamed environment")
+			}
 
 			fmt.Println("Provisioning environment...")
 
-			resp, err := client.CreateEnvironment(profile)
+			var resp *api.CreateEnvResponse
+			if cmd.Flags().Changed("name") || cmd.Flags().Changed("description") || profile != "" {
+				resp, err = client.CreateEnvironmentWithMetadata(api.CreateEnvRequest{
+					Alias: strings.TrimSpace(name), Banner: description, ProfileID: profile,
+				})
+			} else {
+				resp, err = client.CreateEnvironment("")
+			}
 			if err != nil {
 				return fmt.Errorf("create failed: %w", err)
 			}
@@ -315,15 +337,87 @@ func newEnvCreateCmd() *cobra.Command {
 
 			fmt.Printf("Environment ready!\n")
 			fmt.Printf("  ID:       %s\n", resp.EnvID)
+			if resp.Alias != "" {
+				fmt.Printf("  Name:     %s\n", resp.Alias)
+			}
+			if resp.Banner != "" {
+				fmt.Printf("  About:    %s\n", resp.Banner)
+			}
 			fmt.Printf("  Endpoint: %s\n", endpoint)
 			fmt.Println()
 			fmt.Println("Run 'agend config' to configure your AI agents.")
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&profile, "profile", "",
+	command.Flags().StringVar(&name, "name", "", "Environment name (2-32 lowercase letters, numbers, and hyphens)")
+	command.Flags().StringVar(&description, "description", "", "Short environment description (max 256 characters)")
+	command.Flags().StringVar(&profile, "profile", "",
 		"machine profile to create the environment with (see 'agend profiles'; empty = your plan's default)")
-	return cmd
+	return command
+}
+
+func newEnvEditCmd() *cobra.Command {
+	var name string
+	var description string
+	var clearName bool
+	var clearDescription bool
+	command := &cobra.Command{
+		Use:   "edit [env-id]",
+		Short: "Edit an environment name or description",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nameChanged := cmd.Flags().Changed("name")
+			descriptionChanged := cmd.Flags().Changed("description")
+			if nameChanged && clearName {
+				return fmt.Errorf("--name and --clear-name are mutually exclusive")
+			}
+			if descriptionChanged && clearDescription {
+				return fmt.Errorf("--description and --clear-description are mutually exclusive")
+			}
+			if !nameChanged && !clearName && !descriptionChanged && !clearDescription {
+				return fmt.Errorf("provide --name, --description, --clear-name, or --clear-description")
+			}
+
+			envID, err := resolveEnvID(args)
+			if err != nil {
+				return err
+			}
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			request := api.UpdateEnvRequest{ClearAlias: clearName}
+			if nameChanged {
+				value := strings.TrimSpace(name)
+				request.Alias = &value
+			}
+			if descriptionChanged || clearDescription {
+				value := description
+				if clearDescription {
+					value = ""
+				}
+				request.Banner = &value
+			}
+			updated, err := client.UpdateEnvironment(envID, request)
+			if err != nil {
+				return fmt.Errorf("edit failed: %w", err)
+			}
+
+			fmt.Printf("Environment %s updated.\n", updated.EnvID)
+			if updated.Alias != "" {
+				fmt.Printf("  Name:        %s\n", updated.Alias)
+			}
+			if updated.Banner != "" {
+				fmt.Printf("  Description: %s\n", updated.Banner)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&name, "name", "", "Environment name (2-32 lowercase letters, numbers, and hyphens)")
+	command.Flags().StringVar(&description, "description", "", "Short environment description (max 256 characters)")
+	command.Flags().BoolVar(&clearName, "clear-name", false, "Remove the environment name")
+	command.Flags().BoolVar(&clearDescription, "clear-description", false, "Remove the environment description")
+	return command
 }
 
 func newProfilesCmd() *cobra.Command {
@@ -395,6 +489,12 @@ func newEnvStatusCmd() *cobra.Command {
 			}
 
 			fmt.Printf("ID:          %s\n", resp.EnvID)
+			if resp.Alias != "" {
+				fmt.Printf("Name:        %s\n", resp.Alias)
+			}
+			if resp.Banner != "" {
+				fmt.Printf("Description: %s\n", resp.Banner)
+			}
 			fmt.Printf("State:       %s\n", resp.State)
 			endpoint := resp.Endpoint
 			if endpoint == "" {

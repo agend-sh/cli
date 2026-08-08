@@ -131,13 +131,26 @@ func (c *Client) GitHubAuth(code string) (*AuthResponse, error) {
 
 type CreateEnvResponse struct {
 	EnvID    string `json:"env_id"`
+	Alias    string `json:"alias"`
+	Banner   string `json:"banner"`
 	Endpoint string `json:"endpoint"`
 	Secret   string `json:"secret"`
 	State    string `json:"state"`
 }
 
+type CreateEnvRequest struct {
+	Alias  string `json:"alias,omitempty"`
+	Banner string `json:"banner,omitempty"`
+	// ProfileID selects a machine profile the account has an allowance for;
+	// empty means the plan's default profile.
+	ProfileID string `json:"profile_id,omitempty"`
+}
+
 type EnvStatusResponse struct {
 	EnvID      string `json:"env_id"`
+	Alias      string `json:"alias"`
+	Banner     string `json:"banner"`
+	PinnedNote string `json:"pinned_note"`
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
@@ -166,6 +179,8 @@ type ListEnvsResponse struct {
 type EnvSummary struct {
 	EnvID      string `json:"env_id"`
 	Alias      string `json:"alias"`
+	Banner     string `json:"banner"`
+	PinnedNote string `json:"pinned_note"`
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
@@ -216,6 +231,10 @@ func (c *Client) ListProfiles(teamID string) (*ListProfilesResponse, error) {
 	return doControlPlaneJSON[ListProfilesResponse](c, "GET", path, nil)
 }
 
+func (c *Client) CreateEnvironmentWithMetadata(request CreateEnvRequest) (*CreateEnvResponse, error) {
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", request)
+}
+
 func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
 	return c.GetEnvironmentContext(context.Background(), envID)
 }
@@ -225,6 +244,31 @@ func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
 // stuck behind the control-plane client's 30-second transport timeout.
 func (c *Client) GetEnvironmentContext(ctx context.Context, envID string) (*EnvStatusResponse, error) {
 	return doControlPlaneJSONContext[EnvStatusResponse](ctx, c, "GET", "/environments/"+envID, nil)
+}
+
+type UpdateEnvRequest struct {
+	Alias      *string
+	ClearAlias bool
+	Banner     *string
+}
+
+func (c *Client) UpdateEnvironment(envID string, request UpdateEnvRequest) (*EnvStatusResponse, error) {
+	if request.Alias != nil && request.ClearAlias {
+		return nil, fmt.Errorf("environment name and clear-name are mutually exclusive")
+	}
+	body := make(map[string]any, 2)
+	if request.Alias != nil {
+		body["alias"] = *request.Alias
+	} else if request.ClearAlias {
+		body["alias"] = nil
+	}
+	if request.Banner != nil {
+		body["banner"] = *request.Banner
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("environment update is empty")
+	}
+	return doControlPlaneJSON[EnvStatusResponse](c, "PATCH", "/environments/"+envID, body)
 }
 
 func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {

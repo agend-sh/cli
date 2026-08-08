@@ -243,7 +243,9 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "list_environments":
 		return s.listEnvironments()
 	case "env_create":
-		return s.envCreate(strArg(args, "profile"))
+		return s.envCreate(args)
+	case "env_update":
+		return s.envUpdate(args)
 	case "profiles_list":
 		return s.profilesList()
 	case "env_status":
@@ -397,13 +399,46 @@ func (s *Server) listEnvironments() (string, bool) {
 		if env.Alias != "" {
 			name = fmt.Sprintf("%s (%s)", env.EnvID, env.Alias)
 		}
-		result += fmt.Sprintf("%s  state=%s  tier=%s\n", name, env.State, env.Tier)
+		result += fmt.Sprintf("%s  state=%s  tier=%s", name, env.State, env.Tier)
+		if env.Banner != "" {
+			result += fmt.Sprintf("  description=%q", env.Banner)
+		}
+		result += "\n"
 	}
 	return result, false
 }
 
-func (s *Server) envCreate(profile string) (string, bool) {
-	resp, err := s.api.CreateEnvironment(profile)
+func (s *Server) envCreate(args map[string]any) (string, bool) {
+	name, nameSet := args["name"]
+	description, descriptionSet := args["description"]
+	profile := strArg(args, "profile")
+	if nameSet {
+		value, ok := name.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return "name must be a non-empty string", true
+		}
+		name = strings.TrimSpace(value)
+	}
+	if descriptionSet {
+		if _, ok := description.(string); !ok {
+			return "description must be a string", true
+		}
+	}
+
+	var resp *api.CreateEnvResponse
+	var err error
+	if nameSet || descriptionSet || profile != "" {
+		request := api.CreateEnvRequest{ProfileID: profile}
+		if nameSet {
+			request.Alias = name.(string)
+		}
+		if descriptionSet {
+			request.Banner = description.(string)
+		}
+		resp, err = s.api.CreateEnvironmentWithMetadata(request)
+	} else {
+		resp, err = s.api.CreateEnvironment("")
+	}
 	if err != nil {
 		return controlPlaneErr("create environment", err), true
 	}
@@ -417,11 +452,59 @@ func (s *Server) envCreate(profile string) (string, bool) {
 	} else if err := auth.SaveEnvironment(resp.EnvID, resp.Endpoint, ""); err != nil {
 		return fmt.Sprintf("create environment succeeded but persisting endpoint failed: %v", err), true
 	}
-	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s\n"+
+	return fmt.Sprintf("env_id: %s\nname: %s\ndescription: %s\nstate: %s\nendpoint: %s\n"+
 		"note: a freshly-created tunnel can take up to ~60s to start routing. "+
 		"The first shell_exec may need a few seconds — the connection auto-retries; "+
 		"if it reports unreachable, wait a moment and try again.",
-		resp.EnvID, resp.State, resp.Endpoint), false
+		resp.EnvID, resp.Alias, resp.Banner, resp.State, resp.Endpoint), false
+}
+
+func (s *Server) envUpdate(args map[string]any) (string, bool) {
+	envRef := strArg(args, "environment")
+	if envRef == "" {
+		return "environment is required", true
+	}
+	request := api.UpdateEnvRequest{}
+	name, nameSet := args["name"]
+	clearName, _ := args["clear_name"].(bool)
+	description, descriptionSet := args["description"]
+	clearDescription, _ := args["clear_description"].(bool)
+	if nameSet && clearName {
+		return "name and clear_name are mutually exclusive", true
+	}
+	if descriptionSet && clearDescription {
+		return "description and clear_description are mutually exclusive", true
+	}
+	if nameSet {
+		value, ok := name.(string)
+		value = strings.TrimSpace(value)
+		if !ok || value == "" {
+			return "name must be a non-empty string", true
+		}
+		request.Alias = &value
+	}
+	request.ClearAlias = clearName
+	if descriptionSet || clearDescription {
+		value, ok := description.(string)
+		if clearDescription {
+			value, ok = "", true
+		}
+		if !ok {
+			return "description must be a string", true
+		}
+		request.Banner = &value
+	}
+	if !nameSet && !clearName && !descriptionSet && !clearDescription {
+		return "provide name, description, clear_name, or clear_description", true
+	}
+
+	envID := s.resolveEnvID(envRef)
+	resp, err := s.api.UpdateEnvironment(envID, request)
+	if err != nil {
+		return controlPlaneErr("update environment", err), true
+	}
+	return fmt.Sprintf("env_id: %s\nname: %s\ndescription: %s\nstate: %s",
+		resp.EnvID, resp.Alias, resp.Banner, resp.State), false
 }
 
 func (s *Server) profilesList() (string, bool) {
@@ -457,8 +540,8 @@ func (s *Server) envStatus(envRef string) (string, bool) {
 	if err != nil {
 		return controlPlaneErr("environment status", err), true
 	}
-	return fmt.Sprintf("env_id: %s\nstate: %s\ntier: %s\nendpoint: %s\ncreated: %s\nlast_active: %s",
-		resp.EnvID, resp.State, resp.Tier, resp.Endpoint, resp.CreatedAt, resp.LastActive), false
+	return fmt.Sprintf("env_id: %s\nname: %s\ndescription: %s\nstate: %s\ntier: %s\nendpoint: %s\ncreated: %s\nlast_active: %s",
+		resp.EnvID, resp.Alias, resp.Banner, resp.State, resp.Tier, resp.Endpoint, resp.CreatedAt, resp.LastActive), false
 }
 
 func (s *Server) envWake(envRef string) (string, bool) {

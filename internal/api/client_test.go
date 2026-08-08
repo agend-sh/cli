@@ -152,6 +152,10 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		{"list profiles", "GET /v2/profiles", func() error { return responseError(client.ListProfiles("")) }},
 		{"list team profiles", "GET /v2/profiles?team_id=team-1", func() error { return responseError(client.ListProfiles("team-1")) }},
 		{"get environment", "GET /v2/environments/env-1", func() error { return responseError(client.GetEnvironment("env-1")) }},
+		{"update environment", "PATCH /v2/environments/env-1", func() error {
+			name := "build-runner"
+			return responseError(client.UpdateEnvironment("env-1", UpdateEnvRequest{Alias: &name}))
+		}},
 		{"stop environment", "DELETE /v2/environments/env-1", func() error { return responseError(client.StopEnvironment("env-1")) }},
 		{"wake environment", "POST /v2/environments/env-1/wake", func() error { return responseError(client.WakeEnvironment("env-1")) }},
 		{"reauth environment", "POST /v2/environments/env-1/reauth", func() error { return responseError(client.ReauthEnvironment("env-1")) }},
@@ -185,6 +189,48 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 				t.Fatalf("request = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnvironmentMetadataRequests(t *testing.T) {
+	type receivedRequest struct {
+		method string
+		body   map[string]any
+	}
+	received := make(chan receivedRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- receivedRequest{method: r.Method, body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"env_id":"env-1"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "token")
+	if _, err := client.CreateEnvironmentWithMetadata(CreateEnvRequest{
+		Alias: "build-runner", Banner: "CI and release validation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	emptyDescription := ""
+	if _, err := client.UpdateEnvironment("env-1", UpdateEnvRequest{
+		ClearAlias: true, Banner: &emptyDescription,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	create := <-received
+	if create.method != http.MethodPost || create.body["alias"] != "build-runner" ||
+		create.body["banner"] != "CI and release validation" {
+		t.Fatalf("unexpected create request: %#v", create)
+	}
+	update := <-received
+	if update.method != http.MethodPatch || update.body["alias"] != nil || update.body["banner"] != "" {
+		t.Fatalf("unexpected update request: %#v", update)
 	}
 }
 
