@@ -141,6 +141,7 @@ type EnvStatusResponse struct {
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
+	Profile    string `json:"profile_id"`
 	Secret     string `json:"secret,omitempty"`
 	CreatedAt  string `json:"created_at"`
 	LastActive string `json:"last_active"`
@@ -168,6 +169,7 @@ type EnvSummary struct {
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
+	Profile    string `json:"profile_id"`
 	CreatedAt  string `json:"created_at"`
 	LastActive string `json:"last_active"`
 }
@@ -176,8 +178,42 @@ func (c *Client) ListEnvironments() (*ListEnvsResponse, error) {
 	return doControlPlaneJSON[ListEnvsResponse](c, "GET", "/environments", nil)
 }
 
-func (c *Client) CreateEnvironment() (*CreateEnvResponse, error) {
-	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", nil)
+// CreateEnvironment creates a personal environment. profileID selects a
+// machine profile the account has an allowance for; empty means the plan's
+// default profile (and stays wire-compatible with older control planes).
+func (c *Client) CreateEnvironment(profileID string) (*CreateEnvResponse, error) {
+	var body any
+	if profileID != "" {
+		body = map[string]string{"profile_id": profileID}
+	}
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", body)
+}
+
+// ProfileSummary is one machine profile the account may create envs with.
+type ProfileSummary struct {
+	ProfileID   string `json:"profile_id"`
+	Name        string `json:"name"`
+	Default     bool   `json:"default"`
+	VcpuCount   int    `json:"vcpu_count"`
+	MemMib      int    `json:"mem_mib"`
+	DiskGB      int    `json:"disk_gb"`
+	IdleMinutes int    `json:"idle_minutes"`
+	MaxEnvs     int    `json:"max_envs"`
+	InUse       int    `json:"in_use"`
+}
+
+type ListProfilesResponse struct {
+	Profiles []ProfileSummary `json:"profiles"`
+}
+
+// ListProfiles lists the machine profiles available to this account, or to a
+// team when teamID is non-empty.
+func (c *Client) ListProfiles(teamID string) (*ListProfilesResponse, error) {
+	path := "/profiles"
+	if teamID != "" {
+		path += "?team_id=" + url.QueryEscape(teamID)
+	}
+	return doControlPlaneJSON[ListProfilesResponse](c, "GET", path, nil)
 }
 
 func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
@@ -425,8 +461,12 @@ func (c *Client) ListTeamEnvironments(teamID string) (*ListTeamEnvsResponse, err
 	return doControlPlaneJSON[ListTeamEnvsResponse](c, "GET", "/teams/"+teamID+"/environments", nil)
 }
 
-func (c *Client) CreateTeamEnvironment(teamID string) (*CreateEnvResponse, error) {
-	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", map[string]string{"team_id": teamID})
+func (c *Client) CreateTeamEnvironment(teamID, profileID string) (*CreateEnvResponse, error) {
+	body := map[string]string{"team_id": teamID}
+	if profileID != "" {
+		body["profile_id"] = profileID
+	}
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", body)
 }
 
 // AcquireResponse is the result of leasing a team env: a fresh one-time secret

@@ -208,7 +208,7 @@ func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 
 func isRemoteMCPTool(name string) bool {
 	switch name {
-	case "list_environments", "env_create", "env_status", "env_wake", "reload_config":
+	case "list_environments", "env_create", "env_status", "env_wake", "profiles_list", "reload_config":
 		return false
 	default:
 		return true
@@ -243,7 +243,9 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "list_environments":
 		return s.listEnvironments()
 	case "env_create":
-		return s.envCreate()
+		return s.envCreate(strArg(args, "profile"))
+	case "profiles_list":
+		return s.profilesList()
 	case "env_status":
 		return s.envStatus(strArg(args, "environment"))
 	case "env_wake":
@@ -400,8 +402,8 @@ func (s *Server) listEnvironments() (string, bool) {
 	return result, false
 }
 
-func (s *Server) envCreate() (string, bool) {
-	resp, err := s.api.CreateEnvironment()
+func (s *Server) envCreate(profile string) (string, bool) {
+	resp, err := s.api.CreateEnvironment(profile)
 	if err != nil {
 		return controlPlaneErr("create environment", err), true
 	}
@@ -420,6 +422,30 @@ func (s *Server) envCreate() (string, bool) {
 		"The first shell_exec may need a few seconds — the connection auto-retries; "+
 		"if it reports unreachable, wait a moment and try again.",
 		resp.EnvID, resp.State, resp.Endpoint), false
+}
+
+func (s *Server) profilesList() (string, bool) {
+	resp, err := s.api.ListProfiles("")
+	if err != nil {
+		return controlPlaneErr("list profiles", err), true
+	}
+	var result string
+	for _, p := range resp.Profiles {
+		suffix := ""
+		if p.Default {
+			suffix = "  (default)"
+		}
+		sleep := fmt.Sprintf("sleeps after %dm idle", p.IdleMinutes)
+		if p.IdleMinutes == 0 {
+			sleep = "never sleeps"
+		}
+		result += fmt.Sprintf("%s  %d vCPU / %d MiB / %d GB  envs=%d/%d  %s%s\n",
+			p.ProfileID, p.VcpuCount, p.MemMib, p.DiskGB, p.InUse, p.MaxEnvs, sleep, suffix)
+	}
+	if result == "" {
+		result = "no machine profiles available"
+	}
+	return result, false
 }
 
 func (s *Server) envStatus(envRef string) (string, bool) {

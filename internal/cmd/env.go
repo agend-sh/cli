@@ -247,7 +247,8 @@ func newEnvListCmd() *cobra.Command {
 }
 
 func newEnvCreateCmd() *cobra.Command {
-	return &cobra.Command{
+	var profile string
+	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new environment",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -258,7 +259,7 @@ func newEnvCreateCmd() *cobra.Command {
 
 			fmt.Println("Provisioning environment...")
 
-			resp, err := client.CreateEnvironment()
+			resp, err := client.CreateEnvironment(profile)
 			if err != nil {
 				return fmt.Errorf("create failed: %w", err)
 			}
@@ -320,6 +321,44 @@ func newEnvCreateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&profile, "profile", "",
+		"machine profile to create the environment with (see 'agend profiles'; empty = your plan's default)")
+	return cmd
+}
+
+func newProfilesCmd() *cobra.Command {
+	var teamID string
+	cmd := &cobra.Command{
+		Use:   "profiles",
+		Short: "List the machine profiles available to your account",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			resp, err := client.ListProfiles(teamID)
+			if err != nil {
+				return fmt.Errorf("list profiles: %w", err)
+			}
+			fmt.Printf("%-20s %-16s %5s %8s %6s %6s %8s\n",
+				"PROFILE", "NAME", "VCPU", "MEM", "DISK", "ENVS", "SLEEP")
+			for _, p := range resp.Profiles {
+				name := p.Name
+				if p.Default {
+					name += " (default)"
+				}
+				sleep := fmt.Sprintf("%dm", p.IdleMinutes)
+				if p.IdleMinutes == 0 {
+					sleep = "never"
+				}
+				fmt.Printf("%-20s %-16s %5d %7dM %5dG %3d/%-2d %8s\n",
+					p.ProfileID, name, p.VcpuCount, p.MemMib, p.DiskGB, p.InUse, p.MaxEnvs, sleep)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&teamID, "team", "", "list profiles available to a team instead")
+	return cmd
 }
 
 // resolveEnvID returns the environment to act on: the first positional arg, or

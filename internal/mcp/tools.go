@@ -266,6 +266,20 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 			"name":        "env_create",
 			"description": "Create a new environment. Returns the environment ID and endpoint. The environment boots a fresh microVM from the warm pool.",
 			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"profile": map[string]any{
+						"type": "string",
+						"description": "Machine profile id to create the environment with. " +
+							"Omit for your plan's default; profiles_list shows what your account can use.",
+					},
+				},
+			},
+		},
+		{
+			"name":        "profiles_list",
+			"description": "List the machine profiles this account can create environments with, including size (vCPU/RAM/disk), quota, and current usage.",
+			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
 			},

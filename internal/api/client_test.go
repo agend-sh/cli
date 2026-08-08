@@ -148,7 +148,9 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		call func() error
 	}{
 		{"list environments", "GET /v2/environments", func() error { return responseError(client.ListEnvironments()) }},
-		{"create environment", "POST /v2/environments", func() error { return responseError(client.CreateEnvironment()) }},
+		{"create environment", "POST /v2/environments", func() error { return responseError(client.CreateEnvironment("")) }},
+		{"list profiles", "GET /v2/profiles", func() error { return responseError(client.ListProfiles("")) }},
+		{"list team profiles", "GET /v2/profiles?team_id=team-1", func() error { return responseError(client.ListProfiles("team-1")) }},
 		{"get environment", "GET /v2/environments/env-1", func() error { return responseError(client.GetEnvironment("env-1")) }},
 		{"stop environment", "DELETE /v2/environments/env-1", func() error { return responseError(client.StopEnvironment("env-1")) }},
 		{"wake environment", "POST /v2/environments/env-1/wake", func() error { return responseError(client.WakeEnvironment("env-1")) }},
@@ -168,7 +170,7 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		{"accept invite", "POST /v2/teams/team-1/accept", func() error { return client.AcceptInvite("team-1") }},
 		{"list members", "GET /v2/teams/team-1/members", func() error { return responseError(client.ListMembers("team-1")) }},
 		{"list team environments", "GET /v2/teams/team-1/environments", func() error { return responseError(client.ListTeamEnvironments("team-1")) }},
-		{"create team environment", "POST /v2/environments", func() error { return responseError(client.CreateTeamEnvironment("team-1")) }},
+		{"create team environment", "POST /v2/environments", func() error { return responseError(client.CreateTeamEnvironment("team-1", "")) }},
 		{"acquire environment", "POST /v2/environments/env-1/acquire", func() error { return responseError(client.AcquireEnvironment("env-1")) }},
 		{"release environment", "POST /v2/environments/env-1/release", func() error { return client.ReleaseEnvironment("env-1") }},
 		{"heartbeat environment", "POST /v2/environments/env-1/heartbeat", func() error { return client.HeartbeatEnvironment("env-1") }},
@@ -196,7 +198,7 @@ func TestControlPlaneV2DoesNotFallBack(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, "token").CreateEnvironment()
+	_, err := New(server.URL, "token").CreateEnvironment("")
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("CreateEnvironment error = %v, want APIError 404", err)
