@@ -99,8 +99,11 @@ func autoUpdateEnabled(version string, args []string) bool {
 	if v := os.Getenv("AGEND_NO_AUTOUPDATE"); v != "" && v != "0" {
 		return false
 	}
-	// Dev / unstamped builds have no real release to compare against.
-	if version == "" || strings.Contains(version, "dev") {
+	// Only exact release versions participate. `git describe` builds such as
+	// v1.2.0-4-gabc1234[-dirty] are local development artifacts; treating their
+	// base tag as the current release can silently replace a binary being
+	// dogfooded with the public build.
+	if !isReleaseBuildVersion(version) {
 		return false
 	}
 	switch firstSubcommand(args) {
@@ -109,6 +112,26 @@ func autoUpdateEnabled(version string, args []string) bool {
 	}
 	for _, a := range args[1:] {
 		if a == "--version" || a == "-v" || a == "--help" || a == "-h" {
+			return false
+		}
+	}
+	return true
+}
+
+func isReleaseBuildVersion(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if version == "" || strings.ContainsAny(version, "-+") {
+		return false
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
 			return false
 		}
 	}
