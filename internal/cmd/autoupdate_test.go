@@ -54,6 +54,9 @@ func TestAutoUpdateEnabled(t *testing.T) {
 	if !autoUpdateEnabled("v1.1.3", []string{"agend", "exec", "ls"}) {
 		t.Error("expected enabled for a release build running a normal command")
 	}
+	if !autoUpdateEnabled("1.1.3", []string{"agend", "exec", "ls"}) {
+		t.Error("expected enabled for a release build without v prefix")
+	}
 	// Gated off cases.
 	off := []struct {
 		name    string
@@ -62,6 +65,9 @@ func TestAutoUpdateEnabled(t *testing.T) {
 		env     map[string]string
 	}{
 		{"dev build", "0.0.0-dev", []string{"agend", "exec"}, nil},
+		{"git describe build", "v1.2.0-4-gc9b189c", []string{"agend", "mcp"}, nil},
+		{"dirty git describe build", "v1.2.0-4-gc9b189c-dirty", []string{"agend", "mcp"}, nil},
+		{"commit build", "c9b189c", []string{"agend", "mcp"}, nil},
 		{"empty version", "", []string{"agend", "exec"}, nil},
 		{"update command", "v1.1.3", []string{"agend", "update"}, nil},
 		{"version command", "v1.1.3", []string{"agend", "version"}, nil},
