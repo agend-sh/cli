@@ -208,7 +208,7 @@ func (s *Server) handleRequest(ctx context.Context, req *jsonrpcRequest) {
 
 func isRemoteMCPTool(name string) bool {
 	switch name {
-	case "list_environments", "env_create", "env_status", "env_wake", "profiles_list", "reload_config":
+	case "list_environments", "env_create", "env_status", "env_wake", "env_cold_reset", "profiles_list", "reload_config":
 		return false
 	default:
 		return true
@@ -252,6 +252,8 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		return s.envStatus(strArg(args, "environment"))
 	case "env_wake":
 		return s.envWake(strArg(args, "environment"))
+	case "env_cold_reset":
+		return s.envColdReset(ctx, strArg(args, "environment"), strArg(args, "reason"))
 	case "reload_config":
 		return s.reloadConfig()
 	}
@@ -564,6 +566,35 @@ func (s *Server) envWake(envRef string) (string, bool) {
 		return fmt.Sprintf("wake succeeded but persisting endpoint failed: %v", err), true
 	}
 	return fmt.Sprintf("env_id: %s\nstate: %s\nendpoint: %s", resp.EnvID, resp.State, resp.Endpoint), false
+}
+
+func (s *Server) envColdReset(ctx context.Context, envRef, reason string) (string, bool) {
+	if envRef == "" {
+		return "environment is required", true
+	}
+	if strings.TrimSpace(reason) == "" {
+		return "reason is required", true
+	}
+	envID := s.resolveEnvID(envRef)
+	resetCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	resp, err := s.api.ColdResetEnvironmentContext(resetCtx, envID, reason)
+	if err != nil {
+		return controlPlaneErr("cold reset environment", err), true
+	}
+	if resp.Secret == "" || resp.Endpoint == "" {
+		return "cold reset completed without replacement credentials", true
+	}
+	// Retire the old gRPC session immediately. The cold boot invalidates every
+	// process and credential held by the previous guest incarnation.
+	conn := s.pool.Get(envID)
+	if err := conn.SetSecret(resp.Endpoint, resp.Secret); err != nil {
+		return fmt.Sprintf("cold reset succeeded but persisting credentials failed: %v", err), true
+	}
+	return fmt.Sprintf(
+		"env_id: %s\nstate: %s\nendpoint: %s\nrecovery: cold reset completed; persistent disk preserved; guest memory, processes, and snapshots discarded",
+		resp.EnvID, resp.State, resp.Endpoint,
+	), false
 }
 
 func (s *Server) reloadConfig() (string, bool) {

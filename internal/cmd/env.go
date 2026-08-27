@@ -61,6 +61,7 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvStatusCmd())
 	cmd.AddCommand(newEnvDeleteCmd())
 	cmd.AddCommand(newEnvWakeCmd())
+	cmd.AddCommand(newEnvColdResetCmd())
 	cmd.AddCommand(newEnvUseCmd())
 	cmd.AddCommand(newEnvAcquireCmd())
 	cmd.AddCommand(newEnvReleaseCmd())
@@ -604,4 +605,38 @@ func newEnvWakeCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newEnvColdResetCmd() *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "cold-reset [env-id]",
+		Short: "Cold-reset a stuck environment while preserving its data disk",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := apiClient()
+			if err != nil {
+				return err
+			}
+			envID, err := resolveEnvID(args)
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("Cold-resetting environment (persistent disk will be preserved)...")
+			resp, err := client.ColdResetEnvironment(envID, reason)
+			if err != nil {
+				return fmt.Errorf("cold reset failed: %w", err)
+			}
+			if err := auth.SaveEnvironment(resp.EnvID, resp.Endpoint, resp.Secret); err != nil {
+				return fmt.Errorf("save replacement environment credentials: %w", err)
+			}
+			fmt.Println("Cold reset complete. Guest memory, processes, and snapshots were discarded; persistent files were preserved.")
+			fmt.Printf("  Endpoint: %s\n", resp.Endpoint)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "diagnostic reason for the cold reset (required; do not include secrets)")
+	_ = cmd.MarkFlagRequired("reason")
+	return cmd
 }

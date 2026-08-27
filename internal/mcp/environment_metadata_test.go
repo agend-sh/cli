@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,9 @@ func TestEnvironmentMetadataToolUpdatesByEnvironmentID(t *testing.T) {
 
 func TestEnvironmentMetadataToolsAreAdvertised(t *testing.T) {
 	definitions := toolDefinitions()
-	want := map[string]bool{"env_create": false, "env_update": false, "env_status": false}
+	want := map[string]bool{
+		"env_create": false, "env_update": false, "env_status": false, "env_cold_reset": false,
+	}
 	for _, definition := range definitions {
 		name, _ := definition["name"].(string)
 		if _, tracked := want[name]; tracked {
@@ -56,4 +59,25 @@ func TestEnvironmentMetadataToolsAreAdvertised(t *testing.T) {
 			t.Fatalf("MCP tool %s is not advertised", name)
 		}
 	}
+}
+
+func TestColdResetToolRequiresDiagnosticReason(t *testing.T) {
+	mcpServer := NewServer(api.New("http://localhost:1", "token"), "test")
+	result, isError := mcpServer.envColdReset(context.Background(), "env-123", "   ")
+	if !isError || result != "reason is required" {
+		t.Fatalf("envColdReset = (%q, %v), want required-reason error", result, isError)
+	}
+
+	for _, definition := range toolDefinitions() {
+		if definition["name"] != "env_cold_reset" {
+			continue
+		}
+		schema := definition["inputSchema"].(map[string]any)
+		required := schema["required"].([]string)
+		if len(required) != 2 || required[0] != "environment" || required[1] != "reason" {
+			t.Fatalf("cold reset required fields = %#v", required)
+		}
+		return
+	}
+	t.Fatal("env_cold_reset tool is not advertised")
 }

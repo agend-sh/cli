@@ -324,6 +324,23 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 			},
 		},
 		{
+			"name":        "env_cold_reset",
+			"description": "Last-resort recovery for an environment that remains unresponsive or stuck in a lifecycle transition after ordinary status, reconnect, and wake recovery. Preserves files on the persistent data disk, but permanently discards all guest memory, running processes, sessions, and snapshots before cold-booting a fresh VM incarnation. Use only when diagnostic evidence indicates the environment is genuinely stuck. The reason is required for the audit trail and must not contain secrets.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment": envProp,
+					"reason": map[string]any{
+						"type":        "string",
+						"minLength":   1,
+						"maxLength":   256,
+						"description": "Concise diagnostic evidence showing why ordinary recovery is insufficient; do not include secrets",
+					},
+				},
+				"required": []string{"environment", "reason"},
+			},
+		},
+		{
 			"name":        "reload_config",
 			"description": "Reload CLI credentials from disk. Call this after signing up, logging in, or creating environments in another terminal. Resets all connections.",
 			"inputSchema": map[string]any{

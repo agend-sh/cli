@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,7 +134,7 @@ func TestAuthenticationRoutesRemainUnversioned(t *testing.T) {
 }
 
 func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
-	requests := make(chan string, 22)
+	requests := make(chan string, 25)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.Method + " " + r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
@@ -158,6 +159,11 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		}},
 		{"stop environment", "DELETE /v2/environments/env-1", func() error { return responseError(client.StopEnvironment("env-1")) }},
 		{"wake environment", "POST /v2/environments/env-1/wake", func() error { return responseError(client.WakeEnvironment("env-1")) }},
+		{"cold reset environment", "POST /v2/environments/env-1/cold-reset", func() error {
+			return responseError(client.coldResetStepContext(context.Background(), "env-1", coldResetRequest{
+				Reason: "guest shim is unresponsive", OperationID: "0123456789abcdef0123456789abcdef",
+			}))
+		}},
 		{"reauth environment", "POST /v2/environments/env-1/reauth", func() error { return responseError(client.ReauthEnvironment("env-1")) }},
 		{"record funnel event", "POST /v2/events", func() error {
 			return responseError(client.RecordFunnelEventContext(context.Background(), FunnelEventRequest{
@@ -189,6 +195,78 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 				t.Fatalf("request = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestColdResetDrivesColdStopThenWakeWithOneOperationID(t *testing.T) {
+	var requests []coldResetRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v2/environments/env-1/cold-reset" {
+			http.NotFound(w, r)
+			return
+		}
+		var request coldResetRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"env_id":"env-1","state":"crashed","phase":"cold_stopped","cold_reset_pending":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"env_id":"env-1","state":"running","endpoint":"env.test","secret":"replacement"}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := New(server.URL, "token").ColdResetEnvironmentContext(
+		ctx, "env-1", "guest shim remained unreachable after a sleep/wake cycle",
+	)
+	if err != nil {
+		t.Fatalf("ColdResetEnvironmentContext: %v", err)
+	}
+	if result.State != "running" || result.Secret != "replacement" || result.Endpoint != "env.test" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(requests) != 2 || requests[0].OperationID == "" || requests[0] != requests[1] {
+		t.Fatalf("requests are not an exact replay: %+v", requests)
+	}
+}
+
+func TestColdResetReauthsAfterLostCompletionResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-1/cold-reset":
+			_, _ = w.Write([]byte(`{"env_id":"env-1","state":"running","endpoint":"recovered.test","reauth_required":true}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-1/reauth":
+			_, _ = w.Write([]byte(`{"env_id":"env-1","secret":"fresh-secret"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := New(server.URL, "token").ColdResetEnvironmentContext(
+		context.Background(), "env-1", "the prior reset response was lost",
+	)
+	if err != nil {
+		t.Fatalf("ColdResetEnvironmentContext: %v", err)
+	}
+	if result.Secret != "fresh-secret" || result.Endpoint != "recovered.test" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestColdResetRequiresDiagnosticReason(t *testing.T) {
+	_, err := New("http://localhost:1", "token").ColdResetEnvironmentContext(
+		context.Background(), "env-1", "   ",
+	)
+	if err == nil || !strings.Contains(err.Error(), "reason is required") {
+		t.Fatalf("error = %v, want required reason", err)
 	}
 }
 

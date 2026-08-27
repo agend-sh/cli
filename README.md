@@ -79,6 +79,7 @@ Credentials (and any saved accounts) are stored in `~/.config/agend/credentials.
 | `agend env list` | List environments with name, description, state, tier, and endpoint |
 | `agend env status [env-id]` | Show detailed environment info |
 | `agend env wake [env-id]` | Wake a sleeping environment (restores from snapshot) |
+| `agend env cold-reset [env-id] --reason TEXT` | Last-resort cold boot for a stuck environment; preserves persistent files but discards memory, processes, sessions, and snapshots |
 | `agend env delete [env-id]` | Permanently delete an environment |
 
 ### Teams (shared environments)
@@ -170,6 +171,7 @@ The MCP server manages a **connection pool** -- each environment gets its own gR
 | `env_update` | Edit or clear an environment name and description |
 | `env_status` | Get environment metadata, state, tier, endpoint, and timestamps |
 | `env_wake` | Wake a sleeping environment |
+| `env_cold_reset` | Last-resort recovery for a genuinely stuck environment; preserves persistent files but discards memory, processes, sessions, and snapshots; requires an audit reason |
 
 **Shell** (routed to the selected environment backend via gRPC):
 
