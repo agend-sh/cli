@@ -8,7 +8,7 @@ func TestRemoteMCPToolActivationBoundary(t *testing.T) {
 			t.Errorf("isRemoteMCPTool(%q) = false, want true", tool)
 		}
 	}
-	for _, tool := range []string{"list_environments", "env_create", "env_status", "env_wake", "reload_config"} {
+	for _, tool := range []string{"list_environments", "env_create", "env_status", "env_wake", "env_cold_reset", "reload_config"} {
 		if isRemoteMCPTool(tool) {
 			t.Errorf("isRemoteMCPTool(%q) = true, want false", tool)
 		}

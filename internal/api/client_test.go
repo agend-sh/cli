@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,7 +134,7 @@ func TestAuthenticationRoutesRemainUnversioned(t *testing.T) {
 }
 
 func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
-	requests := make(chan string, 22)
+	requests := make(chan string, 25)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.Method + " " + r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
@@ -148,10 +149,21 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		call func() error
 	}{
 		{"list environments", "GET /v2/environments", func() error { return responseError(client.ListEnvironments()) }},
-		{"create environment", "POST /v2/environments", func() error { return responseError(client.CreateEnvironment()) }},
+		{"create environment", "POST /v2/environments", func() error { return responseError(client.CreateEnvironment("")) }},
+		{"list profiles", "GET /v2/profiles", func() error { return responseError(client.ListProfiles("")) }},
+		{"list team profiles", "GET /v2/profiles?team_id=team-1", func() error { return responseError(client.ListProfiles("team-1")) }},
 		{"get environment", "GET /v2/environments/env-1", func() error { return responseError(client.GetEnvironment("env-1")) }},
+		{"update environment", "PATCH /v2/environments/env-1", func() error {
+			name := "build-runner"
+			return responseError(client.UpdateEnvironment("env-1", UpdateEnvRequest{Alias: &name}))
+		}},
 		{"stop environment", "DELETE /v2/environments/env-1", func() error { return responseError(client.StopEnvironment("env-1")) }},
 		{"wake environment", "POST /v2/environments/env-1/wake", func() error { return responseError(client.WakeEnvironment("env-1")) }},
+		{"cold reset environment", "POST /v2/environments/env-1/cold-reset", func() error {
+			return responseError(client.coldResetStepContext(context.Background(), "env-1", coldResetRequest{
+				Reason: "guest shim is unresponsive", OperationID: "0123456789abcdef0123456789abcdef",
+			}))
+		}},
 		{"reauth environment", "POST /v2/environments/env-1/reauth", func() error { return responseError(client.ReauthEnvironment("env-1")) }},
 		{"record funnel event", "POST /v2/events", func() error {
 			return responseError(client.RecordFunnelEventContext(context.Background(), FunnelEventRequest{
@@ -168,7 +180,7 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 		{"accept invite", "POST /v2/teams/team-1/accept", func() error { return client.AcceptInvite("team-1") }},
 		{"list members", "GET /v2/teams/team-1/members", func() error { return responseError(client.ListMembers("team-1")) }},
 		{"list team environments", "GET /v2/teams/team-1/environments", func() error { return responseError(client.ListTeamEnvironments("team-1")) }},
-		{"create team environment", "POST /v2/environments", func() error { return responseError(client.CreateTeamEnvironment("team-1")) }},
+		{"create team environment", "POST /v2/environments", func() error { return responseError(client.CreateTeamEnvironment("team-1", "")) }},
 		{"acquire environment", "POST /v2/environments/env-1/acquire", func() error { return responseError(client.AcquireEnvironment("env-1")) }},
 		{"release environment", "POST /v2/environments/env-1/release", func() error { return client.ReleaseEnvironment("env-1") }},
 		{"heartbeat environment", "POST /v2/environments/env-1/heartbeat", func() error { return client.HeartbeatEnvironment("env-1") }},
@@ -186,6 +198,120 @@ func TestManagementRoutesUseControlPlaneV2(t *testing.T) {
 	}
 }
 
+func TestColdResetDrivesColdStopThenWakeWithOneOperationID(t *testing.T) {
+	var requests []coldResetRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v2/environments/env-1/cold-reset" {
+			http.NotFound(w, r)
+			return
+		}
+		var request coldResetRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"env_id":"env-1","state":"crashed","phase":"cold_stopped","cold_reset_pending":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"env_id":"env-1","state":"running","endpoint":"env.test","secret":"replacement"}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := New(server.URL, "token").ColdResetEnvironmentContext(
+		ctx, "env-1", "guest shim remained unreachable after a sleep/wake cycle",
+	)
+	if err != nil {
+		t.Fatalf("ColdResetEnvironmentContext: %v", err)
+	}
+	if result.State != "running" || result.Secret != "replacement" || result.Endpoint != "env.test" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(requests) != 2 || requests[0].OperationID == "" || requests[0] != requests[1] {
+		t.Fatalf("requests are not an exact replay: %+v", requests)
+	}
+}
+
+func TestColdResetReauthsAfterLostCompletionResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-1/cold-reset":
+			_, _ = w.Write([]byte(`{"env_id":"env-1","state":"running","endpoint":"recovered.test","reauth_required":true}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/environments/env-1/reauth":
+			_, _ = w.Write([]byte(`{"env_id":"env-1","secret":"fresh-secret"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := New(server.URL, "token").ColdResetEnvironmentContext(
+		context.Background(), "env-1", "the prior reset response was lost",
+	)
+	if err != nil {
+		t.Fatalf("ColdResetEnvironmentContext: %v", err)
+	}
+	if result.Secret != "fresh-secret" || result.Endpoint != "recovered.test" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestColdResetRequiresDiagnosticReason(t *testing.T) {
+	_, err := New("http://localhost:1", "token").ColdResetEnvironmentContext(
+		context.Background(), "env-1", "   ",
+	)
+	if err == nil || !strings.Contains(err.Error(), "reason is required") {
+		t.Fatalf("error = %v, want required reason", err)
+	}
+}
+
+func TestEnvironmentMetadataRequests(t *testing.T) {
+	type receivedRequest struct {
+		method string
+		body   map[string]any
+	}
+	received := make(chan receivedRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- receivedRequest{method: r.Method, body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"env_id":"env-1"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "token")
+	if _, err := client.CreateEnvironmentWithMetadata(CreateEnvRequest{
+		Alias: "build-runner", Banner: "CI and release validation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	emptyDescription := ""
+	if _, err := client.UpdateEnvironment("env-1", UpdateEnvRequest{
+		ClearAlias: true, Banner: &emptyDescription,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	create := <-received
+	if create.method != http.MethodPost || create.body["alias"] != "build-runner" ||
+		create.body["banner"] != "CI and release validation" {
+		t.Fatalf("unexpected create request: %#v", create)
+	}
+	update := <-received
+	if update.method != http.MethodPatch || update.body["alias"] != nil || update.body["banner"] != "" {
+		t.Fatalf("unexpected update request: %#v", update)
+	}
+}
+
 func TestControlPlaneV2DoesNotFallBack(t *testing.T) {
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +322,7 @@ func TestControlPlaneV2DoesNotFallBack(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, "token").CreateEnvironment()
+	_, err := New(server.URL, "token").CreateEnvironment("")
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("CreateEnvironment error = %v, want APIError 404", err)

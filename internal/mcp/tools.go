@@ -1,7 +1,7 @@
 package mcp
 
 // envProp is the required environment parameter added to every tool.
-var envProp = map[string]any{"type": "string", "description": "Environment ID (from list_environments)"}
+var envProp = map[string]any{"type": "string", "description": "Environment ID or name (from list_environments)"}
 
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
@@ -264,7 +264,38 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 		// ── Environment management (API only, no gRPC needed) ──
 		{
 			"name":        "env_create",
-			"description": "Create a new environment. Returns the environment ID and endpoint. The environment boots a fresh microVM from the warm pool.",
+			"description": "Create a new environment, optionally giving it a memorable name and short description. Returns the environment ID and endpoint. The environment boots a fresh microVM from the warm pool.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":        map[string]any{"type": "string", "description": "Unique name: 2-32 lowercase letters, numbers, and hyphens"},
+					"description": map[string]any{"type": "string", "maxLength": 256, "description": "Short description of the environment's purpose"},
+					"profile": map[string]any{
+						"type": "string",
+						"description": "Machine profile id to create the environment with. " +
+							"Omit for your plan's default; profiles_list shows what your account can use.",
+					},
+				},
+			},
+		},
+		{
+			"name":        "env_update",
+			"description": "Edit an environment's user-visible name or short description.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment":       envProp,
+					"name":              map[string]any{"type": "string", "description": "Unique name: 2-32 lowercase letters, numbers, and hyphens"},
+					"description":       map[string]any{"type": "string", "maxLength": 256, "description": "Short description of the environment's purpose"},
+					"clear_name":        map[string]any{"type": "boolean", "description": "Remove the current name"},
+					"clear_description": map[string]any{"type": "boolean", "description": "Remove the current description"},
+				},
+				"required": []string{"environment"},
+			},
+		},
+		{
+			"name":        "profiles_list",
+			"description": "List the machine profiles this account can create environments with, including size (vCPU/RAM/disk), quota, and current usage.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -290,6 +321,23 @@ Escape sequences: \n (newline), \t (tab), \x1b (escape), \x04 (Ctrl+D), \x03 (Ct
 					"environment": envProp,
 				},
 				"required": []string{"environment"},
+			},
+		},
+		{
+			"name":        "env_cold_reset",
+			"description": "Last-resort recovery for an environment that remains unresponsive or stuck in a lifecycle transition after ordinary status, reconnect, and wake recovery. Preserves files on the persistent data disk, but permanently discards all guest memory, running processes, sessions, and snapshots before cold-booting a fresh VM incarnation. Use only when diagnostic evidence indicates the environment is genuinely stuck. The reason is required for the audit trail and must not contain secrets.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment": envProp,
+					"reason": map[string]any{
+						"type":        "string",
+						"minLength":   1,
+						"maxLength":   256,
+						"description": "Concise diagnostic evidence showing why ordinary recovery is insufficient; do not include secrets",
+					},
+				},
+				"required": []string{"environment", "reason"},
 			},
 		},
 		{

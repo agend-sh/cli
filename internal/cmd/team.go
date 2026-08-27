@@ -166,7 +166,8 @@ func newTeamEnvsCmd() *cobra.Command {
 }
 
 func newTeamEnvCreateCmd() *cobra.Command {
-	return &cobra.Command{
+	var profile string
+	cmd := &cobra.Command{
 		Use:   "env-create <team-id>",
 		Short: "Create a new shared environment for the team",
 		Args:  cobra.ExactArgs(1),
@@ -176,7 +177,7 @@ func newTeamEnvCreateCmd() *cobra.Command {
 				return err
 			}
 			fmt.Println("Provisioning shared environment...")
-			resp, err := client.CreateTeamEnvironment(args[0])
+			resp, err := client.CreateTeamEnvironment(args[0], profile)
 			if err != nil {
 				return err
 			}
@@ -185,4 +186,7 @@ func newTeamEnvCreateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&profile, "profile", "",
+		"machine profile for the shared environment (see 'agend profiles --team <team-id>')")
+	return cmd
 }

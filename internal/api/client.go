@@ -3,12 +3,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -131,16 +135,30 @@ func (c *Client) GitHubAuth(code string) (*AuthResponse, error) {
 
 type CreateEnvResponse struct {
 	EnvID    string `json:"env_id"`
+	Alias    string `json:"alias"`
+	Banner   string `json:"banner"`
 	Endpoint string `json:"endpoint"`
 	Secret   string `json:"secret"`
 	State    string `json:"state"`
 }
 
+type CreateEnvRequest struct {
+	Alias  string `json:"alias,omitempty"`
+	Banner string `json:"banner,omitempty"`
+	// ProfileID selects a machine profile the account has an allowance for;
+	// empty means the plan's default profile.
+	ProfileID string `json:"profile_id,omitempty"`
+}
+
 type EnvStatusResponse struct {
 	EnvID      string `json:"env_id"`
+	Alias      string `json:"alias"`
+	Banner     string `json:"banner"`
+	PinnedNote string `json:"pinned_note"`
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
+	Profile    string `json:"profile_id"`
 	Secret     string `json:"secret,omitempty"`
 	CreatedAt  string `json:"created_at"`
 	LastActive string `json:"last_active"`
@@ -152,10 +170,18 @@ type EnvStopResponse struct {
 }
 
 type EnvWakeResponse struct {
-	EnvID    string `json:"env_id"`
-	Endpoint string `json:"endpoint"`
-	Secret   string `json:"secret"`
-	State    string `json:"state"`
+	EnvID          string `json:"env_id"`
+	Endpoint       string `json:"endpoint"`
+	Secret         string `json:"secret"`
+	State          string `json:"state"`
+	Phase          string `json:"phase,omitempty"`
+	ResetPending   bool   `json:"cold_reset_pending,omitempty"`
+	ReauthRequired bool   `json:"reauth_required,omitempty"`
+}
+
+type coldResetRequest struct {
+	Reason      string `json:"reason"`
+	OperationID string `json:"operation_id"`
 }
 
 type ListEnvsResponse struct {
@@ -165,9 +191,12 @@ type ListEnvsResponse struct {
 type EnvSummary struct {
 	EnvID      string `json:"env_id"`
 	Alias      string `json:"alias"`
+	Banner     string `json:"banner"`
+	PinnedNote string `json:"pinned_note"`
 	State      string `json:"state"`
 	Endpoint   string `json:"endpoint"`
 	Tier       string `json:"tier"`
+	Profile    string `json:"profile_id"`
 	CreatedAt  string `json:"created_at"`
 	LastActive string `json:"last_active"`
 }
@@ -176,8 +205,46 @@ func (c *Client) ListEnvironments() (*ListEnvsResponse, error) {
 	return doControlPlaneJSON[ListEnvsResponse](c, "GET", "/environments", nil)
 }
 
-func (c *Client) CreateEnvironment() (*CreateEnvResponse, error) {
-	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", nil)
+// CreateEnvironment creates a personal environment. profileID selects a
+// machine profile the account has an allowance for; empty means the plan's
+// default profile (and stays wire-compatible with older control planes).
+func (c *Client) CreateEnvironment(profileID string) (*CreateEnvResponse, error) {
+	var body any
+	if profileID != "" {
+		body = map[string]string{"profile_id": profileID}
+	}
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", body)
+}
+
+// ProfileSummary is one machine profile the account may create envs with.
+type ProfileSummary struct {
+	ProfileID   string `json:"profile_id"`
+	Name        string `json:"name"`
+	Default     bool   `json:"default"`
+	VcpuCount   int    `json:"vcpu_count"`
+	MemMib      int    `json:"mem_mib"`
+	DiskGB      int    `json:"disk_gb"`
+	IdleMinutes int    `json:"idle_minutes"`
+	MaxEnvs     int    `json:"max_envs"`
+	InUse       int    `json:"in_use"`
+}
+
+type ListProfilesResponse struct {
+	Profiles []ProfileSummary `json:"profiles"`
+}
+
+// ListProfiles lists the machine profiles available to this account, or to a
+// team when teamID is non-empty.
+func (c *Client) ListProfiles(teamID string) (*ListProfilesResponse, error) {
+	path := "/profiles"
+	if teamID != "" {
+		path += "?team_id=" + url.QueryEscape(teamID)
+	}
+	return doControlPlaneJSON[ListProfilesResponse](c, "GET", path, nil)
+}
+
+func (c *Client) CreateEnvironmentWithMetadata(request CreateEnvRequest) (*CreateEnvResponse, error) {
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", request)
 }
 
 func (c *Client) GetEnvironment(envID string) (*EnvStatusResponse, error) {
@@ -191,6 +258,31 @@ func (c *Client) GetEnvironmentContext(ctx context.Context, envID string) (*EnvS
 	return doControlPlaneJSONContext[EnvStatusResponse](ctx, c, "GET", "/environments/"+envID, nil)
 }
 
+type UpdateEnvRequest struct {
+	Alias      *string
+	ClearAlias bool
+	Banner     *string
+}
+
+func (c *Client) UpdateEnvironment(envID string, request UpdateEnvRequest) (*EnvStatusResponse, error) {
+	if request.Alias != nil && request.ClearAlias {
+		return nil, fmt.Errorf("environment name and clear-name are mutually exclusive")
+	}
+	body := make(map[string]any, 2)
+	if request.Alias != nil {
+		body["alias"] = *request.Alias
+	} else if request.ClearAlias {
+		body["alias"] = nil
+	}
+	if request.Banner != nil {
+		body["banner"] = *request.Banner
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("environment update is empty")
+	}
+	return doControlPlaneJSON[EnvStatusResponse](c, "PATCH", "/environments/"+envID, body)
+}
+
 func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {
 	return doControlPlaneJSON[EnvStopResponse](c, "DELETE", "/environments/"+envID, nil)
 }
@@ -202,6 +294,96 @@ func (c *Client) WakeEnvironment(envID string) (*EnvWakeResponse, error) {
 // WakeEnvironmentContext is WakeEnvironment with caller-controlled cancellation.
 func (c *Client) WakeEnvironmentContext(ctx context.Context, envID string) (*EnvWakeResponse, error) {
 	return doControlPlaneJSONContext[EnvWakeResponse](ctx, c, "POST", "/environments/"+envID+"/wake", nil)
+}
+
+// ColdResetEnvironment discards guest memory, processes, and snapshots while
+// preserving the environment's persistent data disk. The bounded context keeps
+// a CLI invocation from waiting forever on an unavailable owner node.
+func (c *Client) ColdResetEnvironment(envID, reason string) (*EnvWakeResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return c.ColdResetEnvironmentContext(ctx, envID, reason)
+}
+
+// ColdResetEnvironmentContext drives the durable cold-stop/cold-wake phases to
+// completion. Every retry carries the same operation ID, so a lost HTTP
+// response resumes the fenced operation instead of resetting a recovered VM.
+func (c *Client) ColdResetEnvironmentContext(ctx context.Context, envID, reason string) (*EnvWakeResponse, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 256 {
+		return nil, fmt.Errorf("cold reset reason is required (max 256 chars)")
+	}
+	if c.baseURLErr != nil {
+		return nil, c.baseURLErr
+	}
+	operationBytes := make([]byte, 16)
+	if _, err := rand.Read(operationBytes); err != nil {
+		return nil, fmt.Errorf("generate cold reset operation id: %w", err)
+	}
+	request := coldResetRequest{Reason: reason, OperationID: hex.EncodeToString(operationBytes)}
+
+	for {
+		result, err := c.coldResetStepContext(ctx, envID, request)
+		retryImmediately := false
+		if err == nil {
+			if result.EnvID != "" && result.EnvID != envID {
+				return nil, fmt.Errorf("cold reset returned environment %q, expected %q", result.EnvID, envID)
+			}
+			if result.State == "running" {
+				if result.Secret == "" {
+					reauth, reauthErr := c.ReauthEnvironmentContext(ctx, envID)
+					if reauthErr != nil {
+						if !retryableColdResetError(reauthErr) {
+							return nil, fmt.Errorf("cold reset reauth: %w", reauthErr)
+						}
+					} else if reauth.EnvID != "" && reauth.EnvID != envID {
+						return nil, fmt.Errorf("cold reset reauth returned environment %q, expected %q", reauth.EnvID, envID)
+					} else {
+						result.Secret = reauth.Secret
+					}
+				}
+				if result.Endpoint == "" {
+					status, statusErr := c.GetEnvironmentContext(ctx, envID)
+					if statusErr == nil && status.State == "running" {
+						result.Endpoint = status.Endpoint
+					} else if statusErr != nil && !retryableColdResetError(statusErr) {
+						return nil, fmt.Errorf("cold reset status: %w", statusErr)
+					}
+				}
+				if result.Secret != "" && result.Endpoint != "" {
+					return result, nil
+				}
+			}
+			retryImmediately = result.Phase == "cold_stopped"
+		} else if !retryableColdResetError(err) {
+			return nil, err
+		}
+		if retryImmediately {
+			continue
+		}
+
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("cold reset did not complete: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (c *Client) coldResetStepContext(ctx context.Context, envID string, request coldResetRequest) (*EnvWakeResponse, error) {
+	return doControlPlaneJSONContext[EnvWakeResponse](
+		ctx, c, "POST", "/environments/"+envID+"/cold-reset", request,
+	)
+}
+
+func retryableColdResetError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+	}
+	return true
 }
 
 type ReauthResponse struct {
@@ -425,8 +607,12 @@ func (c *Client) ListTeamEnvironments(teamID string) (*ListTeamEnvsResponse, err
 	return doControlPlaneJSON[ListTeamEnvsResponse](c, "GET", "/teams/"+teamID+"/environments", nil)
 }
 
-func (c *Client) CreateTeamEnvironment(teamID string) (*CreateEnvResponse, error) {
-	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", map[string]string{"team_id": teamID})
+func (c *Client) CreateTeamEnvironment(teamID, profileID string) (*CreateEnvResponse, error) {
+	body := map[string]string{"team_id": teamID}
+	if profileID != "" {
+		body["profile_id"] = profileID
+	}
+	return doControlPlaneJSON[CreateEnvResponse](c, "POST", "/environments", body)
 }
 
 // AcquireResponse is the result of leasing a team env: a fresh one-time secret
