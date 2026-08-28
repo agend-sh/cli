@@ -7,7 +7,7 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "list_environments",
-			"description": "List available environments with their IDs, state, and tier. Call this first to get the environment ID needed by all other tools.\n\nEnvironment details:\n- Full Ubuntu 24.04 with Python 3.12, Node 22, Go 1.24, Rust, Java 21, Ruby, PHP, build-essential, and common dev tools.\n- Filesystem uses overlayfs: the base image is read-only, all writes go to a separate data drive. 'df /' may show the base image size (~3.5GB) but your writable space is on the overlay (check 'df /mnt/upper' for actual free space).\n- Pre-installed tools: git, gh, ripgrep, fd-find, jq, curl, cmake, make, sqlite3, postgresql-client, mysql-client.",
+			"description": "List available environments with their IDs, state, and tier. Call this first to get the environment ID needed by all other tools.\n\nEnvironment details:\n- Full Ubuntu 24.04 with Python 3.12, Node 22, Go 1.26, Rust, Java 21, Ruby, PHP, build-essential, and common dev tools.\n- Filesystem uses overlayfs: the base image is read-only, all writes go to a separate data drive. 'df /' may show the base image size (~3.5GB) but your writable space is on the overlay (check 'df /mnt/upper' for actual free space).\n- Pre-installed tools: git, gh, ripgrep, fd-find, jq, curl, cmake, make, sqlite3, postgresql-client, mysql-client.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},

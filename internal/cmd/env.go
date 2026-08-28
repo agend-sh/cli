@@ -503,6 +503,9 @@ func newEnvStatusCmd() *cobra.Command {
 			}
 			fmt.Printf("Endpoint:    %s\n", endpoint)
 			fmt.Printf("Tier:        %s\n", resp.Tier)
+			if resp.Profile != "" {
+				fmt.Printf("Profile:     %s\n", resp.Profile)
+			}
 			fmt.Printf("Created:     %s\n", resp.CreatedAt)
 			fmt.Printf("Last active: %s\n", resp.LastActive)
 

@@ -39,7 +39,7 @@ cd cli
 make install    # builds and copies to /usr/local/bin
 ```
 
-Requires Go 1.24+.
+Requires Go 1.26.7+.
 
 ## Quick start
 
