@@ -276,8 +276,11 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 				for i := 1; i < len(parts)-1; i++ {
 					zone := strings.Join(parts[i:], ".")
 					if zone == "agend.sh" {
-						resolved = true // use infra credentials from MMDS
-						break
+						// Platform zone: never a user-registrable domain, and there
+						// is no in-guest credential path for it any more (v2
+						// removed MMDS tunnel credentials). Fail explicitly rather
+						// than sending the request on without credentials.
+						return "agend.sh is the platform zone and cannot be used as a custom domain; use a domain registered with `agend domain add`", true
 					}
 					creds, err := s.api.ResolveDomainCredentials(zone)
 					if err == nil {
