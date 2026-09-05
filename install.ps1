@@ -36,6 +36,20 @@ try {
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $ArchivePath
     Invoke-WebRequest -UseBasicParsing -Uri $ChecksumsUrl -OutFile (Join-Path $TmpDir 'checksums.txt')
 
+    # The pinned amd64 verifier also runs under Windows 11 ARM64 emulation.
+    # The agend archive itself remains native to the selected architecture.
+    $Cosign = Join-Path $TmpDir 'cosign.exe'
+    Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-windows-amd64.exe' -OutFile $Cosign
+    if ((Get-FileHash -Algorithm SHA256 -Path $Cosign).Hash.ToLower() -ne '9fe59be0eca1271873ce019061335eb1ac419b7059202e797828467ddabe33be') {
+        throw 'Signature verifier checksum mismatch - refusing to install.'
+    }
+    $Bundle = Join-Path $TmpDir 'checksums.txt.sigstore.json'
+    Invoke-WebRequest -UseBasicParsing -Uri "$ChecksumsUrl.sigstore.json" -OutFile $Bundle
+    & $Cosign verify-blob --bundle $Bundle `
+        --certificate-identity "https://github.com/agend-sh/cli/.github/workflows/release.yml@refs/tags/$Tag" `
+        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' (Join-Path $TmpDir 'checksums.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Release signature verification failed - refusing to install.' }
+
     # Verify checksum (fail closed: a missing entry aborts)
     $Expected = (Get-Content (Join-Path $TmpDir 'checksums.txt') |
         Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+$([regex]::Escape($Archive))$" } |
@@ -47,7 +61,7 @@ try {
     if ($Actual.ToLower() -ne $Expected.ToLower()) {
         throw "Checksum verification failed!`n  Expected: $Expected`n  Got:      $Actual"
     }
-    Write-Host 'Checksum verified.'
+    Write-Host 'Release signature and checksum verified.'
 
     Expand-Archive -Path $ArchivePath -DestinationPath $TmpDir -Force
     $Extracted = Get-ChildItem -Path $TmpDir -Recurse -Filter $Binary | Select-Object -First 1

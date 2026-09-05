@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -206,29 +207,37 @@ func installTargetDir() (string, error) {
 // expected sha256 for the named archive. A missing checksums file or a
 // missing entry is an error — the update never proceeds unverified.
 func fetchChecksum(client *http.Client, tag, archiveName string) (string, error) {
-	url := fmt.Sprintf("%s/%s/checksums.txt", downloadURL, tag)
-	resp, err := client.Get(url)
+	checksums, err := fetchReleaseMetadata(client, tag, "checksums.txt")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("checksums.txt: HTTP %d", resp.StatusCode)
+	proof, err := fetchReleaseMetadata(client, tag, "checksums.txt.sigstore.json")
+	if err != nil {
+		return "", err
 	}
+	if err := verifyChecksums(tag, checksums, proof); err != nil {
+		return "", err
+	}
+	return parseChecksum(checksums, archiveName)
+}
 
-	scanner := bufio.NewScanner(resp.Body)
+func parseChecksum(checksums []byte, archiveName string) (string, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(checksums))
+	var result string
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) == 2 && fields[1] == archiveName {
-			if len(fields[0]) != 64 {
+			if decoded, err := hex.DecodeString(fields[0]); err != nil || len(decoded) != 32 || result != "" {
 				return "", fmt.Errorf("malformed checksum for %s", archiveName)
 			}
-			return strings.ToLower(fields[0]), nil
+			result = strings.ToLower(fields[0])
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
+	}
+	if result != "" {
+		return result, nil
 	}
 	return "", fmt.Errorf("no checksum entry for %s in checksums.txt", archiveName)
 }

@@ -36,37 +36,52 @@ CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${LATEST}/checksums.
 
 echo "Installing agend ${LATEST} (${OS}/${ARCH})..."
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+AGEND_INSTALL_TMP=$(mktemp -d)
+trap 'rm -rf "$AGEND_INSTALL_TMP"' EXIT
 
 # Download archive and checksums
-curl -fsSL "$URL" -o "${TMPDIR}/${ARCHIVE}"
-curl -fsSL "$CHECKSUMS_URL" -o "${TMPDIR}/checksums.txt"
+curl -fsSL "$URL" -o "${AGEND_INSTALL_TMP}/${ARCHIVE}"
+curl -fsSL "$CHECKSUMS_URL" -o "${AGEND_INSTALL_TMP}/checksums.txt"
 
-# Verify checksum (fail closed: a missing entry or missing sha256 tool aborts)
-cd "$TMPDIR"
-EXPECTED=$(grep " ${ARCHIVE}\$" checksums.txt | awk '{print $1}')
-if [ -z "$EXPECTED" ]; then
-  echo "Error: no checksum entry for ${ARCHIVE} in checksums.txt — refusing to install."
+# Bootstrap a fixed verifier from a separately pinned Sigstore release.
+# Never execute the downloaded agend binary to verify itself.
+COSIGN_VERSION=v3.1.3
+case "${OS}/${ARCH}" in
+  darwin/amd64) COSIGN_SHA=2347488e5d5b25336644024dfeca5601b190e91197a71a917bda44744aff106c ;;
+  darwin/arm64) COSIGN_SHA=5cf948c2f4dfe59687bdd0b8523709067383e03982cc543475c8a7dc70e92a76 ;;
+  linux/amd64) COSIGN_SHA=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
+  linux/arm64) COSIGN_SHA=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
+esac
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "Error: sha256sum or shasum is required." >&2
+    return 1
+  fi
+}
+cd "$AGEND_INSTALL_TMP"
+curl -fsSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-${OS}-${ARCH}" -o cosign
+if [ "$(sha256_file cosign)" != "$COSIGN_SHA" ]; then
+  echo "Error: signature verifier checksum mismatch — refusing to install." >&2
   exit 1
 fi
+chmod 700 cosign
+curl -fsSL "${CHECKSUMS_URL}.sigstore.json" -o checksums.txt.sigstore.json
+./cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/agend-sh/cli/.github/workflows/release.yml@refs/tags/${LATEST}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
 
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL=$(sha256sum "${ARCHIVE}" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-  ACTUAL=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
-else
-  echo "Error: sha256sum or shasum is required to verify the download — refusing to install."
-  exit 1
-fi
-
+# Only a signed checksum manifest can authorize extraction or installation.
+EXPECTED=$(awk -v asset="$ARCHIVE" '$2 == asset { print $1 }' checksums.txt)
+ACTUAL=$(sha256_file "$ARCHIVE")
 if [ "$ACTUAL" != "$EXPECTED" ]; then
-  echo "Checksum verification failed!"
-  echo "  Expected: $EXPECTED"
-  echo "  Got:      $ACTUAL"
+  echo "Error: archive checksum missing or mismatched — refusing to install." >&2
   exit 1
 fi
-echo "Checksum verified."
+echo "Release signature and checksum verified."
 
 # Extract
 tar -xzf "${ARCHIVE}"

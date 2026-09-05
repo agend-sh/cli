@@ -481,7 +481,7 @@ func LoadAPIURL() string {
 }
 
 // BrowserLogin starts a local HTTP server, opens the browser for OAuth,
-// and waits for the callback with the token.
+// and exchanges the callback's one-use code with a verifier kept in the CLI.
 func BrowserLogin() (string, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -499,6 +499,10 @@ func BrowserLogin() (string, error) {
 		return "", fmt.Errorf("generate state nonce: %w", err)
 	}
 	nonce := hex.EncodeToString(nonceBytes)
+	verifier, challenge, err := loginPKCE()
+	if err != nil {
+		return "", fmt.Errorf("generate login verifier: %w", err)
+	}
 
 	// The callback URL uses the literal 127.0.0.1 the listener is bound to —
 	// "localhost" can resolve to ::1 first (common on Windows), and a browser
@@ -506,38 +510,52 @@ func BrowserLogin() (string, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	callbackPath := "/callback/" + nonce
 	callbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, callbackPath)
-	authURL := "https://agend.sh/auth/cli?callback=" + url.QueryEscape(callbackURL)
-
-	openBrowser(authURL)
+	authURL := "https://agend.sh/auth/cli?callback=" + url.QueryEscape(callbackURL) + "&challenge=" + url.QueryEscape(challenge)
 
 	tokenCh := make(chan string, 1)
 	errCh := make(chan error, 1)
+	var callbackOnce sync.Once
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		if subtle.ConstantTimeCompare([]byte(r.URL.Path), []byte(callbackPath)) != 1 {
 			http.Error(w, "Invalid callback", http.StatusForbidden)
 			return
 		}
 
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			errCh <- errors.New("no token in callback")
-			http.Error(w, "Missing token", http.StatusBadRequest)
+		code := r.URL.Query().Get("code")
+		if !loginCodeRE.MatchString(code) {
+			http.Error(w, "Invalid login code", http.StatusBadRequest)
 			return
 		}
-
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><body style="font-family:system-ui;text-align:center;padding:4rem">
-			<h2>Authenticated!</h2><p>You can close this tab and return to your terminal.</p>
-		</body></html>`)
-
-		tokenCh <- token
+		completed := false
+		callbackOnce.Do(func() {
+			completed = true
+			token, err := exchangeLoginCode(&http.Client{Timeout: 15 * time.Second}, LoadAPIURL(), code, verifier)
+			if err != nil {
+				errCh <- err
+				http.Error(w, "Login did not complete. Return to your terminal.", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, `<html><body><h2>Authenticated!</h2><p>You can close this tab and return to your terminal.</p></body></html>`)
+			tokenCh <- token
+		})
+		if !completed {
+			http.Error(w, "Login already completed", http.StatusConflict)
+		}
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 3 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
 	go server.Serve(listener)
 	defer server.Close()
+	openBrowser(authURL)
 
 	// Bounded wait — if the browser never completes the flow (blocked popup,
 	// closed tab, IPv6-only resolver), fail with guidance instead of hanging
