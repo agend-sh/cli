@@ -146,7 +146,11 @@ func installVersion(client *http.Client, tag string) error {
 	}
 
 	url := fmt.Sprintf("%s/%s/%s", downloadURL, tag, asset)
-	dlResp, err := client.Get(url)
+	// Release archives include the embedded signature verifier. Give streaming
+	// downloads their own bounded budget; metadata requests remain short.
+	downloadClient := *client
+	downloadClient.Timeout = 5 * time.Minute
+	dlResp, err := downloadClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
