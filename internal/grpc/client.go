@@ -75,6 +75,7 @@ func Dial(ctx context.Context, addr, secret, sessionToken string) (*Client, erro
 
 	opts = append(opts, grpc.WithBlock())
 	opts = append(opts, grpc.WithUnaryInterceptor(c.authInterceptor()))
+	opts = append(opts, grpc.WithStreamInterceptor(c.authStreamInterceptor()))
 	// Match the daemon's 16MB limits so 10MB chunked transfers aren't rejected
 	// by gRPC's 4MB default on either the request (FilePutChunked) or the
 	// response (FileGetChunked).
@@ -147,6 +148,9 @@ func (c *Client) Close() error {
 // authInterceptor injects auth headers and captures session tokens from responses.
 func (c *Client) authInterceptor() grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if _, bypass := ctx.Value(authBypassKey{}).(bool); bypass {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
 		// Authenticate on a short, side-effect-free Ping before dispatching the
 		// caller's RPC. MCP intentionally runs tool calls concurrently; allowing
 		// two of those calls to carry the same one-time secret would let the first
@@ -181,6 +185,34 @@ func (c *Client) authInterceptor() grpc.UnaryClientInterceptor {
 		}
 
 		return err
+	}
+}
+
+type authBypassKey struct{}
+
+// authStreamInterceptor authenticates before creating a client stream. gRPC
+// has no way to add a newly-issued session token to an already-open stream, so
+// the one-time-secret handshake is completed with Ping first when necessary.
+func (c *Client) authStreamInterceptor() grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		invokeWithoutAuth := func(pingCtx context.Context, pingMethod string, req, reply interface{}, pingCC *grpc.ClientConn, pingOpts ...grpc.CallOption) error {
+			pingCtx = context.WithValue(pingCtx, authBypassKey{}, true)
+			return pingCC.Invoke(pingCtx, pingMethod, req, reply, pingOpts...)
+		}
+		if err := c.ensureAuthenticated(ctx, cc, invokeWithoutAuth); err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		token := c.token
+		secret := c.secret
+		c.mu.Unlock()
+		if token != "" {
+			ctx = metadata.AppendToOutgoingContext(ctx, "x-session-token", token)
+		} else if secret != "" {
+			ctx = metadata.AppendToOutgoingContext(ctx, "x-one-time-secret", secret)
+		}
+		return streamer(ctx, desc, cc, method, opts...)
 	}
 }
 

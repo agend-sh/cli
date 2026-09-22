@@ -28,6 +28,16 @@ type concurrentAuthTestServer struct {
 	secondSecretOnce sync.Once
 }
 
+func (s *concurrentAuthTestServer) streamAuthInterceptor(
+	srv interface{}, stream ggrpc.ServerStream, info *ggrpc.StreamServerInfo, handler ggrpc.StreamHandler,
+) error {
+	md, _ := metadata.FromIncomingContext(stream.Context())
+	if firstMetadataValue(md, "x-session-token") != "shared-session-token" {
+		return status.Error(codes.Unauthenticated, "missing stream session token")
+	}
+	return handler(srv, stream)
+}
+
 func newConcurrentAuthTestServer() *concurrentAuthTestServer {
 	return &concurrentAuthTestServer{secondSecret: make(chan struct{})}
 }
@@ -100,6 +110,62 @@ func (s *concurrentAuthTestServer) Ping(context.Context, *pb.PingRequest) (*pb.P
 
 func (s *concurrentAuthTestServer) Exec(context.Context, *pb.ExecRequest) (*pb.ExecResponse, error) {
 	return &pb.ExecResponse{Status: "completed"}, nil
+}
+
+func (s *concurrentAuthTestServer) Connect(stream pb.AgentService_ConnectServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	return stream.Send(&pb.ConnectResponse{Status: "completed"})
+}
+
+func TestStreamingCallAuthenticatesBeforeOpeningStream(t *testing.T) {
+	testServer := newConcurrentAuthTestServer()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := ggrpc.NewServer(
+		ggrpc.UnaryInterceptor(testServer.authInterceptor),
+		ggrpc.StreamInterceptor(testServer.streamAuthInterceptor),
+	)
+	pb.RegisterAgentServiceServer(server, testServer)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Dial(ctx, listener.Addr().String(), "first-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	stream, err := client.Agent.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := stream.Send(&pb.ConnectRequest{Payload: &pb.ConnectRequest_Start{
+		Start: &pb.ConnectStart{Command: "bash"},
+	}}); err != nil {
+		t.Fatalf("stream Send(): %v", err)
+	}
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("stream Recv(): %v", err)
+	}
+	if response.GetStatus() != "completed" {
+		t.Fatalf("stream status = %q, want completed", response.GetStatus())
+	}
+	testServer.mu.Lock()
+	secretCalls := testServer.secretCalls
+	testServer.mu.Unlock()
+	if secretCalls != 1 {
+		t.Fatalf("handshake Ping calls = %d, want 1", secretCalls)
+	}
 }
 
 func TestConcurrentFirstCallsConsumeSecretOnce(t *testing.T) {

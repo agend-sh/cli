@@ -31,6 +31,11 @@ service AgentService {
   // read so terminal resize events remain responsive.
   rpc Resize(ResizeRequest) returns (ResizeResponse);
 
+  // Open a full-duplex raw PTY stream for human terminal clients. The first
+  // request must contain start; subsequent requests carry input, resize, or
+  // interrupt events. Responses carry raw PTY bytes as they become available.
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+
   // Send SIGINT (Ctrl+C) to interrupt a running command.
   rpc Interrupt(InterruptRequest) returns (InterruptResponse);
 
@@ -91,6 +96,13 @@ message ExecRequest {
   bool run_in_background = 4;     // return task_id immediately
   uint32 tail_lines = 5;          // return only last N lines of output
   uint32 head_lines = 6;          // return only first N lines of output
+  // Return the interactive session's screen field as raw PTY bytes (ANSI
+  // intact, no vt10x re-render, no decorative filtering) instead of the
+  // LLM-oriented cleaned rendering. For a real terminal client driving its
+  // own local emulator (agend connect), not for MCP tool consumers.
+  bool raw_output = 7;
+  uint32 columns = 8;             // initial PTY width for interactive clients
+  uint32 rows = 9;                // initial PTY height for interactive clients
 }
 
 message ExecResponse {
@@ -151,6 +163,34 @@ message ResizeRequest {
 }
 
 message ResizeResponse {}
+
+message ConnectStart {
+  string command = 1;
+  uint32 columns = 2;
+  uint32 rows = 3;
+}
+
+message ConnectRequest {
+  oneof payload {
+    ConnectStart start = 1;
+    bytes input = 2;
+    ResizeRequest resize = 3;
+    InterruptRequest interrupt = 4;
+    ConnectKeepalive keepalive = 5;
+  }
+}
+
+message ConnectKeepalive {}
+
+message ConnectResponse {
+  // "awaiting_input", "resized", "interrupted", or "completed".
+  string status = 1;
+  // Raw PTY bytes. The client owns terminal emulation and sanitization.
+  bytes output = 2;
+  int32 exit_code = 3;
+  bool input_wait = 4;
+  bool truncated = 5;
+}
 
 message InterruptRequest {}
 

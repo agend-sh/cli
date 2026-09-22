@@ -19,6 +19,9 @@ func main() {
 	root := cmd.NewRoot(version)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if exitCoder, ok := err.(interface{ ExitCode() int }); ok {
+			os.Exit(exitCoder.ExitCode())
+		}
 		os.Exit(1)
 	}
 }
