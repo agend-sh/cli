@@ -57,8 +57,10 @@ func newConnectCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			progress := startConnectProgress(cmd.ErrOrStderr())
+			defer progress.Stop()
 			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
-				return runConnectSession(ctx, cmd, client, shell)
+				return runConnectSession(ctx, cmd, client, shell, progress)
 			})
 		},
 	}
@@ -68,17 +70,19 @@ func newConnectCmd() *cobra.Command {
 	return cmd
 }
 
-func runConnectSession(ctx context.Context, cmd *cobra.Command, client *agentgrpc.Client, shell string) error {
+func runConnectSession(ctx context.Context, cmd *cobra.Command, client *agentgrpc.Client, shell string, progress *connectProgress) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf("connect requires an interactive terminal on stdin")
 	}
 
 	columns, rows, _ := normalizedTerminalSize(stdoutTerminalSize)
+	progress.SetPhase("Opening interactive channel")
 	stream, err := client.Agent.Connect(ctx)
 	if err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
 
+	progress.SetPhase("Preparing terminal")
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
@@ -86,11 +90,13 @@ func runConnectSession(ctx context.Context, cmd *cobra.Command, client *agentgrp
 	}
 	defer func() { _ = term.Restore(fd, oldState) }()
 
+	progress.SetPhase("Starting remote shell")
 	if err := stream.Send(&pb.ConnectRequest{Payload: &pb.ConnectRequest_Start{
 		Start: &pb.ConnectStart{Command: shell, Columns: columns, Rows: rows},
 	}}); err != nil {
 		return fmt.Errorf("connect start failed: %w", err)
 	}
+	progress.SetPhase("Waiting for first screen")
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -145,6 +151,7 @@ func runConnectSession(ctx context.Context, cmd *cobra.Command, client *agentgrp
 	for {
 		select {
 		case result := <-responses:
+			progress.Stop()
 			if result.err != nil {
 				if errors.Is(result.err, io.EOF) {
 					return nil
