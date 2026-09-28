@@ -376,9 +376,47 @@ func (c *Client) WakeEnvironment(envID string) (*EnvWakeResponse, error) {
 	return c.WakeEnvironmentContext(context.Background(), envID)
 }
 
+// WakeTimeout bounds waiting for a wake that boots from scratch, which the
+// server finishes in the background.
+const WakeTimeout = 5 * time.Minute
+
 // WakeEnvironmentContext is WakeEnvironment with caller-controlled cancellation.
+// A restore that finishes within the request answers with the endpoint and a
+// fresh secret. A slower boot answers 202 waking and completes in the
+// background; this waits for GET to report running, then reauths for a secret,
+// so callers always get credentials for a running environment.
 func (c *Client) WakeEnvironmentContext(ctx context.Context, envID string) (*EnvWakeResponse, error) {
-	return doControlPlaneJSONContext[EnvWakeResponse](ctx, c, "POST", "/environments/"+envID+"/wake", nil)
+	resp, err := doControlPlaneJSONContext[EnvWakeResponse](ctx, c, "POST", "/environments/"+envID+"/wake", nil)
+	if err != nil || resp.State != "waking" {
+		return resp, err
+	}
+	if resp.EnvID != "" && resp.EnvID != envID {
+		return nil, fmt.Errorf("wake returned environment %q, expected %q", resp.EnvID, envID)
+	}
+	ctx, cancel := context.WithTimeout(ctx, WakeTimeout)
+	defer cancel()
+	for {
+		if err := sleepContext(ctx, coldResetPollInterval); err != nil {
+			return nil, fmt.Errorf("wake did not complete: %w", err)
+		}
+		status, err := c.GetEnvironmentContext(ctx, envID)
+		if err != nil {
+			if !retryableColdResetStatusError(err) {
+				return nil, fmt.Errorf("wake status: %w", err)
+			}
+			continue
+		}
+		switch status.State {
+		case "waking", "booting":
+			continue
+		case "running":
+			return c.coldResetCredentials(ctx, envID, &EnvWakeResponse{
+				EnvID: envID, State: status.State, Endpoint: status.Endpoint,
+			})
+		default:
+			return nil, fmt.Errorf("wake did not complete: environment is %s", status.State)
+		}
+	}
 }
 
 // ColdResetEnvironment discards guest memory, processes, and snapshots while
@@ -540,8 +578,8 @@ func (c *Client) sendColdReset(ctx context.Context, envID string, request coldRe
 }
 
 // coldResetCredentials returns the fresh incarnation's endpoint and secret.
-// A completed reset only reports that the environment is running; the secret
-// comes from an idempotent reauth.
+// A completed reset, or a wake finished in the background, only reports that
+// the environment is running; the secret comes from an idempotent reauth.
 func (c *Client) coldResetCredentials(ctx context.Context, envID string, result *EnvWakeResponse) (*EnvWakeResponse, error) {
 	for {
 		if result.Secret == "" {
