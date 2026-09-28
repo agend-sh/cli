@@ -24,6 +24,7 @@ const (
 	AgentService_RawInput_FullMethodName       = "/agentd.v1.AgentService/RawInput"
 	AgentService_Resize_FullMethodName         = "/agentd.v1.AgentService/Resize"
 	AgentService_Connect_FullMethodName        = "/agentd.v1.AgentService/Connect"
+	AgentService_Watch_FullMethodName          = "/agentd.v1.AgentService/Watch"
 	AgentService_Interrupt_FullMethodName      = "/agentd.v1.AgentService/Interrupt"
 	AgentService_TaskOutput_FullMethodName     = "/agentd.v1.AgentService/TaskOutput"
 	AgentService_TaskStop_FullMethodName       = "/agentd.v1.AgentService/TaskStop"
@@ -68,6 +69,13 @@ type AgentServiceClient interface {
 	// request must contain start; subsequent requests carry input, resize, or
 	// interrupt events. Responses carry raw PTY bytes as they become available.
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConnectRequest, ConnectResponse], error)
+	// Mirror the active interactive session read-only, for a person watching
+	// an agent work. The stream replays the session's retained output, then
+	// sends new output as the session's own clients (Exec, Input, RawInput,
+	// Connect) receive it. Watch never reads from or writes to the guest, so
+	// it cannot change what those clients observe. With no active session it
+	// waits for one, and after a session ends it waits for the next.
+	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error)
 	// Send SIGINT (Ctrl+C) to interrupt a running command.
 	Interrupt(ctx context.Context, in *InterruptRequest, opts ...grpc.CallOption) (*InterruptResponse, error)
 	// Get the output of a background task started with run_in_background.
@@ -155,6 +163,25 @@ func (c *agentServiceClient) Connect(ctx context.Context, opts ...grpc.CallOptio
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectClient = grpc.BidiStreamingClient[ConnectRequest, ConnectResponse]
+
+func (c *agentServiceClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[1], AgentService_Watch_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchRequest, WatchResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_WatchClient = grpc.ServerStreamingClient[WatchResponse]
 
 func (c *agentServiceClient) Interrupt(ctx context.Context, in *InterruptRequest, opts ...grpc.CallOption) (*InterruptResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -324,6 +351,13 @@ type AgentServiceServer interface {
 	// request must contain start; subsequent requests carry input, resize, or
 	// interrupt events. Responses carry raw PTY bytes as they become available.
 	Connect(grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]) error
+	// Mirror the active interactive session read-only, for a person watching
+	// an agent work. The stream replays the session's retained output, then
+	// sends new output as the session's own clients (Exec, Input, RawInput,
+	// Connect) receive it. Watch never reads from or writes to the guest, so
+	// it cannot change what those clients observe. With no active session it
+	// waits for one, and after a session ends it waits for the next.
+	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error
 	// Send SIGINT (Ctrl+C) to interrupt a running command.
 	Interrupt(context.Context, *InterruptRequest) (*InterruptResponse, error)
 	// Get the output of a background task started with run_in_background.
@@ -373,6 +407,9 @@ func (UnimplementedAgentServiceServer) Resize(context.Context, *ResizeRequest) (
 }
 func (UnimplementedAgentServiceServer) Connect(grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]) error {
 	return status.Error(codes.Unimplemented, "method Connect not implemented")
+}
+func (UnimplementedAgentServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
+	return status.Error(codes.Unimplemented, "method Watch not implemented")
 }
 func (UnimplementedAgentServiceServer) Interrupt(context.Context, *InterruptRequest) (*InterruptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Interrupt not implemented")
@@ -515,6 +552,17 @@ func _AgentService_Connect_Handler(srv interface{}, stream grpc.ServerStream) er
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectServer = grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]
+
+func _AgentService_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AgentServiceServer).Watch(m, &grpc.GenericServerStream[WatchRequest, WatchResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_WatchServer = grpc.ServerStreamingServer[WatchResponse]
 
 func _AgentService_Interrupt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(InterruptRequest)
@@ -854,6 +902,11 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _AgentService_Connect_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "Watch",
+			Handler:       _AgentService_Watch_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "proto/agentd/v1/agent.proto",

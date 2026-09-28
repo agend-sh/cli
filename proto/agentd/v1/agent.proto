@@ -36,6 +36,14 @@ service AgentService {
   // interrupt events. Responses carry raw PTY bytes as they become available.
   rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
 
+  // Mirror the active interactive session read-only, for a person watching
+  // an agent work. The stream replays the session's retained output, then
+  // sends new output as the session's own clients (Exec, Input, RawInput,
+  // Connect) receive it. Watch never reads from or writes to the guest, so
+  // it cannot change what those clients observe. With no active session it
+  // waits for one, and after a session ends it waits for the next.
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
+
   // Send SIGINT (Ctrl+C) to interrupt a running command.
   rpc Interrupt(InterruptRequest) returns (InterruptResponse);
 
@@ -175,6 +183,42 @@ message ResizeRequest {
 }
 
 message ResizeResponse {}
+
+message WatchRequest {}
+
+message WatchSession {
+  string command = 1;
+  // The PTY size. Zero when unknown, as after a host worker restart.
+  uint32 columns = 2;
+  uint32 rows = 3;
+  // True when the replayed output lacks the session's earliest bytes.
+  bool history_truncated = 4;
+  // How many bytes of retained output the following output events replay
+  // before live output begins.
+  uint64 history_bytes = 5;
+}
+
+message WatchResize {
+  uint32 columns = 1;
+  uint32 rows = 2;
+}
+
+message WatchResponse {
+  oneof event {
+    // A session is active. Its retained output follows as output events.
+    WatchSession session = 1;
+    // Raw PTY bytes, in order. The client owns terminal sanitization.
+    bytes output = 2;
+    // The session's PTY was resized.
+    WatchResize resize = 3;
+    // Output the watcher fell too far behind to receive, in bytes.
+    uint64 skipped = 4;
+    // The session ended.
+    bool ended = 5;
+    // Sent while idle so proxies keep the stream open.
+    bool keepalive = 6;
+  }
+}
 
 message ConnectStart {
   string command = 1;

@@ -62,6 +62,7 @@ func NewRoot(version string) *cobra.Command {
 	root.AddCommand(newPingCmd())
 	root.AddCommand(newExecCmd())
 	root.AddCommand(newConnectCmd())
+	root.AddCommand(newWatchCmd())
 	root.AddCommand(newFileGetCmd())
 	root.AddCommand(newFilePutCmd())
 	root.AddCommand(newFileMoveCmd())
