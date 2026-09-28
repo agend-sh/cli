@@ -91,6 +91,8 @@ func validateBaseURL(baseURL string) error {
 type APIError struct {
 	StatusCode int
 	Message    string
+	// Code is the server's machine-readable error code, when it sends one.
+	Code string
 }
 
 func (e *APIError) Error() string {
@@ -162,6 +164,16 @@ type EnvStatusResponse struct {
 	Secret     string `json:"secret,omitempty"`
 	CreatedAt  string `json:"created_at"`
 	LastActive string `json:"last_active"`
+	// ColdReset reports the cold reset recorded on the current lifecycle
+	// operation, if any.
+	ColdReset *ColdResetProgress `json:"cold_reset,omitempty"`
+}
+
+// ColdResetProgress is the phase of one cold reset: "stopping", "stopped",
+// "booting", or "complete".
+type ColdResetProgress struct {
+	OperationID string `json:"operation_id"`
+	Phase       string `json:"phase"`
 }
 
 type EnvStopResponse struct {
@@ -177,6 +189,9 @@ type EnvWakeResponse struct {
 	Phase          string `json:"phase,omitempty"`
 	ResetPending   bool   `json:"cold_reset_pending,omitempty"`
 	ReauthRequired bool   `json:"reauth_required,omitempty"`
+	// OperationID echoes the cold reset this response describes. Servers that
+	// run reset phases in the background always set it.
+	OperationID string `json:"operation_id,omitempty"`
 }
 
 type coldResetRequest struct {
@@ -300,15 +315,45 @@ func (c *Client) WakeEnvironmentContext(ctx context.Context, envID string) (*Env
 // preserving the environment's persistent data disk. The bounded context keeps
 // a CLI invocation from waiting forever on an unavailable owner node.
 func (c *Client) ColdResetEnvironment(envID, reason string) (*EnvWakeResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), ColdResetTimeout)
 	defer cancel()
 	return c.ColdResetEnvironmentContext(ctx, envID, reason)
 }
 
-// ColdResetEnvironmentContext drives the durable cold-stop/cold-wake phases to
-// completion. Every retry carries the same operation ID, so a lost HTTP
-// response resumes the fenced operation instead of resetting a recovered VM.
+// ColdResetEnvironmentContext drives a cold reset to completion. Every request
+// carries the same operation ID, so a lost HTTP response resumes the fenced
+// operation instead of resetting a recovered VM.
 func (c *Client) ColdResetEnvironmentContext(ctx context.Context, envID, reason string) (*EnvWakeResponse, error) {
+	return c.ColdResetEnvironmentProgress(ctx, envID, reason, nil)
+}
+
+// ColdResetTimeout bounds a complete cold reset: a cold stop and a fresh boot,
+// each of which can take about a minute on a loaded node.
+const ColdResetTimeout = 10 * time.Minute
+
+// Cold-reset pacing. Variables so tests can run the state machine quickly.
+var (
+	coldResetPollInterval = 2 * time.Second
+	// Re-send when the stop finished but no boot started, e.g. its worker died.
+	coldResetAdvanceAfter = 20 * time.Second
+	// Re-send when a stop or boot shows no progress for this long. It exceeds
+	// the control plane's 90s node-agent timeout.
+	coldResetResumeAfter = 3 * time.Minute
+	// Re-send when the server has not recorded this operation, or while
+	// another lifecycle operation owns the environment.
+	coldResetUnclaimedAfter = 30 * time.Second
+	coldResetMaxBackoff     = 15 * time.Second
+)
+
+// ColdResetEnvironmentProgress is ColdResetEnvironmentContext with progress
+// reporting: progress, when non-nil, receives each newly observed phase
+// ("stopping", "stopped", "booting", "waiting", "complete").
+//
+// The server accepts the reset and runs its stop and boot phases in the
+// background, so the client polls GET /environments/{id} and re-sends the
+// reset only when progress stalls. Re-sends of an accepted operation do not
+// count against the per-hour reset limit; a 429 for that limit is final.
+func (c *Client) ColdResetEnvironmentProgress(ctx context.Context, envID, reason string, progress func(phase string)) (*EnvWakeResponse, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || len(reason) > 256 {
 		return nil, fmt.Errorf("cold reset reason is required (max 256 chars)")
@@ -322,53 +367,171 @@ func (c *Client) ColdResetEnvironmentContext(ctx context.Context, envID, reason 
 	}
 	request := coldResetRequest{Reason: reason, OperationID: hex.EncodeToString(operationBytes)}
 
+	lastReported := ""
+	report := func(phase string) {
+		if progress != nil && phase != "" && phase != lastReported {
+			lastReported = phase
+			progress(phase)
+		}
+	}
+
+	result, err := c.sendColdReset(ctx, envID, request)
+	if err != nil {
+		return nil, err
+	}
+	if result.OperationID == "" {
+		// The server predates background resets and only reports completion
+		// in the POST response.
+		return c.coldResetByReplay(ctx, envID, request, result)
+	}
+	report(result.Phase)
+
+	lastSent := time.Now()
+	phase, phaseSince := result.Phase, time.Now()
+	for {
+		if result.State == "running" && (result.Phase == "complete" || result.ReauthRequired || result.Secret != "") {
+			report("complete")
+			return c.coldResetCredentials(ctx, envID, result)
+		}
+		if err := sleepContext(ctx, coldResetPollInterval); err != nil {
+			return nil, fmt.Errorf("cold reset did not complete: %w", err)
+		}
+
+		status, err := c.GetEnvironmentContext(ctx, envID)
+		if err != nil {
+			if !retryableColdResetStatusError(err) {
+				return nil, fmt.Errorf("cold reset status: %w", err)
+			}
+			continue
+		}
+		ours := status.ColdReset != nil && status.ColdReset.OperationID == request.OperationID
+		if ours {
+			if status.ColdReset.Phase != phase {
+				phase, phaseSince = status.ColdReset.Phase, time.Now()
+			}
+			report(phase)
+			if phase == "complete" && status.State == "running" {
+				return c.coldResetCredentials(ctx, envID, &EnvWakeResponse{
+					EnvID: envID, State: status.State, Endpoint: status.Endpoint,
+				})
+			}
+		}
+
+		resendAfter := coldResetUnclaimedAfter
+		stalledFor := time.Since(lastSent)
+		if ours {
+			resendAfter = coldResetResumeAfter
+			if phase == "stopped" {
+				resendAfter = coldResetAdvanceAfter
+			}
+			if since := time.Since(phaseSince); since < stalledFor {
+				stalledFor = since
+			}
+		}
+		if stalledFor < resendAfter {
+			continue
+		}
+		if result, err = c.sendColdReset(ctx, envID, request); err != nil {
+			return nil, err
+		}
+		lastSent = time.Now()
+		if result.Phase == "waiting" {
+			report("waiting")
+		}
+	}
+}
+
+// sendColdReset posts one cold-reset request, retrying transport failures and
+// 5xx responses. The per-hour reset limit is final; the looser request limit
+// backs off and retries.
+func (c *Client) sendColdReset(ctx context.Context, envID string, request coldResetRequest) (*EnvWakeResponse, error) {
+	backoff := coldResetPollInterval
 	for {
 		result, err := c.coldResetStepContext(ctx, envID, request)
-		retryImmediately := false
 		if err == nil {
 			if result.EnvID != "" && result.EnvID != envID {
 				return nil, fmt.Errorf("cold reset returned environment %q, expected %q", result.EnvID, envID)
 			}
-			if result.State == "running" {
-				if result.Secret == "" {
-					reauth, reauthErr := c.ReauthEnvironmentContext(ctx, envID)
-					if reauthErr != nil {
-						if !retryableColdResetError(reauthErr) {
-							return nil, fmt.Errorf("cold reset reauth: %w", reauthErr)
-						}
-					} else if reauth.EnvID != "" && reauth.EnvID != envID {
-						return nil, fmt.Errorf("cold reset reauth returned environment %q, expected %q", reauth.EnvID, envID)
-					} else {
-						result.Secret = reauth.Secret
-					}
-				}
-				if result.Endpoint == "" {
-					status, statusErr := c.GetEnvironmentContext(ctx, envID)
-					if statusErr == nil && status.State == "running" {
-						result.Endpoint = status.Endpoint
-					} else if statusErr != nil && !retryableColdResetError(statusErr) {
-						return nil, fmt.Errorf("cold reset status: %w", statusErr)
-					}
-				}
-				if result.Secret != "" && result.Endpoint != "" {
-					return result, nil
-				}
-			}
-			retryImmediately = result.Phase == "cold_stopped"
-		} else if !retryableColdResetError(err) {
+			return result, nil
+		}
+		if !retryableColdResetError(err) {
 			return nil, err
 		}
-		if retryImmediately {
-			continue
+		wait := backoff
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
+			wait = coldResetMaxBackoff
 		}
+		if err := sleepContext(ctx, wait); err != nil {
+			return nil, fmt.Errorf("cold reset did not complete: %w", err)
+		}
+		backoff = min(backoff*2, coldResetMaxBackoff)
+	}
+}
 
-		timer := time.NewTimer(2 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, fmt.Errorf("cold reset did not complete: %w", ctx.Err())
-		case <-timer.C:
+// coldResetCredentials returns the fresh incarnation's endpoint and secret.
+// A completed reset only reports that the environment is running; the secret
+// comes from an idempotent reauth.
+func (c *Client) coldResetCredentials(ctx context.Context, envID string, result *EnvWakeResponse) (*EnvWakeResponse, error) {
+	for {
+		if result.Secret == "" {
+			reauth, err := c.ReauthEnvironmentContext(ctx, envID)
+			if err != nil {
+				if !retryableColdResetError(err) {
+					return nil, fmt.Errorf("cold reset reauth: %w", err)
+				}
+			} else if reauth.EnvID != "" && reauth.EnvID != envID {
+				return nil, fmt.Errorf("cold reset reauth returned environment %q, expected %q", reauth.EnvID, envID)
+			} else {
+				result.Secret = reauth.Secret
+			}
 		}
+		if result.Endpoint == "" {
+			status, err := c.GetEnvironmentContext(ctx, envID)
+			if err == nil && status.State == "running" {
+				result.Endpoint = status.Endpoint
+			} else if err != nil && !retryableColdResetError(err) {
+				return nil, fmt.Errorf("cold reset status: %w", err)
+			}
+		}
+		if result.Secret != "" && result.Endpoint != "" {
+			result.EnvID = envID
+			result.State = "running"
+			return result, nil
+		}
+		if err := sleepContext(ctx, coldResetPollInterval); err != nil {
+			return nil, fmt.Errorf("cold reset did not complete: %w", err)
+		}
+	}
+}
+
+// coldResetByReplay drives servers that run both reset phases inside the POST:
+// it re-sends the same operation until the response reports the fresh VM.
+func (c *Client) coldResetByReplay(ctx context.Context, envID string, request coldResetRequest, result *EnvWakeResponse) (*EnvWakeResponse, error) {
+	for {
+		if result.State == "running" {
+			return c.coldResetCredentials(ctx, envID, result)
+		}
+		if result.Phase != "cold_stopped" {
+			if err := sleepContext(ctx, coldResetPollInterval); err != nil {
+				return nil, fmt.Errorf("cold reset did not complete: %w", err)
+			}
+		}
+		var err error
+		if result, err = c.sendColdReset(ctx, envID, request); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -378,12 +541,29 @@ func (c *Client) coldResetStepContext(ctx context.Context, envID string, request
 	)
 }
 
+// coldResetLimitCode marks the per-hour cold-reset limit, which retrying
+// cannot satisfy.
+const coldResetLimitCode = "cold_reset_limit"
+
 func retryableColdResetError(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
+		if apiErr.Code == coldResetLimitCode {
+			return false
+		}
 		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
 	}
 	return true
+}
+
+// retryableColdResetStatusError also tolerates 409: the status route reports a
+// lifecycle identity conflict while a phase transition is being committed.
+func retryableColdResetStatusError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+		return true
+	}
+	return retryableColdResetError(err)
 }
 
 type ReauthResponse struct {
@@ -513,13 +693,14 @@ func doJSONContext[T any](ctx context.Context, c *Client, method, path string, b
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		json.Unmarshal(respBody, &errResp)
 		msg := errResp.Error
 		if msg == "" {
 			msg = string(respBody)
 		}
-		return nil, &APIError{StatusCode: resp.StatusCode, Message: msg}
+		return nil, &APIError{StatusCode: resp.StatusCode, Message: msg, Code: errResp.Code}
 	}
 
 	var result T

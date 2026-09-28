@@ -579,7 +579,7 @@ func (s *Server) envColdReset(ctx context.Context, envRef, reason string) (strin
 		return "reason is required", true
 	}
 	envID := s.resolveEnvID(envRef)
-	resetCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	resetCtx, cancel := context.WithTimeout(ctx, api.ColdResetTimeout)
 	defer cancel()
 	resp, err := s.api.ColdResetEnvironmentContext(resetCtx, envID, reason)
 	if err != nil {

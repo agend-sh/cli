@@ -627,7 +627,18 @@ func newEnvColdResetCmd() *cobra.Command {
 			}
 
 			fmt.Println("Cold-resetting environment (persistent disk will be preserved)...")
-			resp, err := client.ColdResetEnvironment(envID, reason)
+			ctx, cancel := context.WithTimeout(cmd.Context(), api.ColdResetTimeout)
+			defer cancel()
+			resp, err := client.ColdResetEnvironmentProgress(ctx, envID, reason, func(phase string) {
+				switch phase {
+				case "stopping":
+					fmt.Println("  Stopping the current VM...")
+				case "booting":
+					fmt.Println("  Booting a fresh VM from the preserved disk...")
+				case "waiting":
+					fmt.Println("  Waiting for another operation on this environment to finish...")
+				}
+			})
 			if err != nil {
 				return fmt.Errorf("cold reset failed: %w", err)
 			}
