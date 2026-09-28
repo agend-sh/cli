@@ -152,7 +152,10 @@ type ExecResponse struct {
 	Truncated  bool   `protobuf:"varint,9,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	TotalLines uint32 `protobuf:"varint,10,opt,name=total_lines,json=totalLines,proto3" json:"total_lines,omitempty"`
 	ShownLines uint32 `protobuf:"varint,11,opt,name=shown_lines,json=shownLines,proto3" json:"shown_lines,omitempty"`
-	// True when the active interactive session is ready to receive input.
+	// True if the PTY read/poll call observed an input-wait packet for this
+	// response. False means no event was observed in that call; it does not
+	// establish that the child is not waiting. Requires guest support and is
+	// not application-level readiness.
 	InputWait     bool `protobuf:"varint,12,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -317,14 +320,18 @@ func (x *InputRequest) GetInput() string {
 }
 
 type InputResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "completed", "awaiting_input", "timeout"
-	ExitCode      int32                  `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Stdout        string                 `protobuf:"bytes,3,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        string                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	PromptType    string                 `protobuf:"bytes,5,opt,name=prompt_type,json=promptType,proto3" json:"prompt_type,omitempty"`
-	PromptText    string                 `protobuf:"bytes,6,opt,name=prompt_text,json=promptText,proto3" json:"prompt_text,omitempty"`
-	InputWait     bool                   `protobuf:"varint,7,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"` // interactive session is ready for input
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Status     string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "completed", "awaiting_input", "timeout"
+	ExitCode   int32                  `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Stdout     string                 `protobuf:"bytes,3,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr     string                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	PromptType string                 `protobuf:"bytes,5,opt,name=prompt_type,json=promptType,proto3" json:"prompt_type,omitempty"`
+	PromptText string                 `protobuf:"bytes,6,opt,name=prompt_text,json=promptText,proto3" json:"prompt_text,omitempty"`
+	// True if the PTY read/poll call observed an input-wait packet for this
+	// response. False means no event was observed in that call; it does not
+	// establish that the child is not waiting. Requires guest support and is
+	// not application-level readiness.
+	InputWait     bool `protobuf:"varint,7,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -453,10 +460,15 @@ func (x *RawInputRequest) GetInput() string {
 }
 
 type RawInputResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`                      // "completed", "awaiting_input"
-	Screen        string                 `protobuf:"bytes,2,opt,name=screen,proto3" json:"screen,omitempty"`                      // current terminal screen content
-	ExitCode      int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // set when status = "completed"
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Status   string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`                      // "completed", "awaiting_input"
+	Screen   string                 `protobuf:"bytes,2,opt,name=screen,proto3" json:"screen,omitempty"`                      // current terminal screen content
+	ExitCode int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // set when status = "completed"
+	// True if the PTY read/poll call observed an input-wait packet for this
+	// response. False means no event was observed in that call; it does not
+	// establish that the child is not waiting. Requires guest support and is
+	// not application-level readiness.
+	InputWait     bool `protobuf:"varint,4,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -510,6 +522,13 @@ func (x *RawInputResponse) GetExitCode() int32 {
 		return x.ExitCode
 	}
 	return 0
+}
+
+func (x *RawInputResponse) GetInputWait() bool {
+	if x != nil {
+		return x.InputWait
+	}
+	return false
 }
 
 type ResizeRequest struct {
@@ -831,10 +850,14 @@ type ConnectResponse struct {
 	// "awaiting_input", "resized", "interrupted", or "completed".
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	// Raw PTY bytes. The client owns terminal emulation and sanitization.
-	Output        []byte `protobuf:"bytes,2,opt,name=output,proto3" json:"output,omitempty"`
-	ExitCode      int32  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	InputWait     bool   `protobuf:"varint,4,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
-	Truncated     bool   `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Output   []byte `protobuf:"bytes,2,opt,name=output,proto3" json:"output,omitempty"`
+	ExitCode int32  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// True if the PTY read/poll call observed an input-wait packet for this
+	// response. False means no event was observed in that call; it does not
+	// establish that the child is not waiting. Requires guest support and is
+	// not application-level readiness.
+	InputWait     bool `protobuf:"varint,4,opt,name=input_wait,json=inputWait,proto3" json:"input_wait,omitempty"`
+	Truncated     bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2518,11 +2541,13 @@ const file_proto_agentd_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"input_wait\x18\a \x01(\bR\tinputWait\"'\n" +
 	"\x0fRawInputRequest\x12\x14\n" +
-	"\x05input\x18\x01 \x01(\tR\x05input\"_\n" +
+	"\x05input\x18\x01 \x01(\tR\x05input\"~\n" +
 	"\x10RawInputResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x16\n" +
 	"\x06screen\x18\x02 \x01(\tR\x06screen\x12\x1b\n" +
-	"\texit_code\x18\x03 \x01(\x05R\bexitCode\"=\n" +
+	"\texit_code\x18\x03 \x01(\x05R\bexitCode\x12\x1d\n" +
+	"\n" +
+	"input_wait\x18\x04 \x01(\bR\tinputWait\"=\n" +
 	"\rResizeRequest\x12\x18\n" +
 	"\acolumns\x18\x01 \x01(\rR\acolumns\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\"\x10\n" +

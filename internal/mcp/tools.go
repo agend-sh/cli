@@ -19,8 +19,20 @@ func toolDefinitions() []map[string]any {
 
 Returns one of three statuses:
 - "completed": Command finished. Check stdout, stderr, and exit_code.
-- "awaiting_input": Command is waiting for input (password, REPL prompt, TUI app).
+- "awaiting_input": The interactive process is still running. This status alone
+  does not mean it is currently blocked waiting for input.
 - "timeout": Command exceeded timeout_ms.
+
+For interactive=true, the response also includes input_wait. This is a
+per-response event observation, not a persistent waiting-state query. True
+means the guest PTY reader observed an input-wait packet while collecting this
+response: the child's terminal read path lacked sufficient input and was
+entering its wait path. The event may arrive before the scheduler marks the
+child asleep. The packet is consumed when read, so a later false does not
+cancel an earlier true and does not prove that the child stopped waiting.
+False means no event was observed in this response; signal support depends on
+the guest stack. This is process-level feedback, not application or service
+readiness.
 
 INTERACTIVE MODE (set interactive=true):
 Use for REPLs (python3, node, jshell, psql, sqlite3, irb, ghci, etc.) and
@@ -34,8 +46,8 @@ When interactive=true:
 - Do NOT use shell_provide_input for interactive apps (it's for passwords only).
 
 Interactive workflow:
-1. shell_exec(command="python3", interactive=true) → "awaiting_input"
-2. shell_send_raw(input="print('hello')\n") → shows output + "awaiting_input"
+1. shell_exec(command="python3", interactive=true) → "awaiting_input", input_wait: true
+2. shell_send_raw(input="print('hello')\n") → shows output and whether a new input-wait event was observed
 3. shell_send_raw(input="exit()\n") → normally "completed"
 4. If step 3 briefly returns "awaiting_input" because the PTY snapshot raced
    process exit, call shell_send_raw(input="") to refresh the same session;
@@ -64,7 +76,8 @@ To close an interactive session:
 Appends a newline automatically.
 
 DO NOT use this for interactive apps (REPLs, TUI apps) — use shell_send_raw instead.
-This tool is only for simple prompts like sudo password, SSH confirmations, or [Y/n] prompts.`,
+This tool is only for simple prompts like sudo password, SSH confirmations, or [Y/n] prompts.
+The response includes the per-response input_wait event observation described for shell_exec. A false value does not cancel an earlier true event.`,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -80,7 +93,14 @@ This tool is only for simple prompts like sudo password, SSH confirmations, or [
 
 This is THE tool for interacting with any program launched with interactive=true.
 After shell_exec with interactive=true returns "awaiting_input", use this tool for ALL
-subsequent interaction.
+subsequent interaction. Each response includes input_wait: true or false. True
+means this response observed a guest PTY input-wait event. The event reports
+that the child's terminal read path lacked sufficient input and was entering
+its wait path; it may arrive before the scheduler marks the child asleep. The
+packet is consumed when read, so false on a later response means no new event
+was observed in that response. It does not cancel an earlier event or prove
+that the child stopped waiting. Signal support depends on the guest stack.
+The status "awaiting_input" only says that the process is still running.
 
 Common patterns:
 - REPL input: shell_send_raw(input="print('hello')\n")

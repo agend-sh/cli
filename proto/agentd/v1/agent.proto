@@ -129,7 +129,10 @@ message ExecResponse {
   uint32 total_lines = 10;
   uint32 shown_lines = 11;
 
-  // True when the active interactive session is ready to receive input.
+  // True if the PTY read/poll call observed an input-wait packet for this
+  // response. False means no event was observed in that call; it does not
+  // establish that the child is not waiting. Requires guest support and is
+  // not application-level readiness.
   bool input_wait = 12;
 }
 
@@ -144,7 +147,11 @@ message InputResponse {
   string stderr = 4;
   string prompt_type = 5;
   string prompt_text = 6;
-  bool input_wait = 7;            // interactive session is ready for input
+  // True if the PTY read/poll call observed an input-wait packet for this
+  // response. False means no event was observed in that call; it does not
+  // establish that the child is not waiting. Requires guest support and is
+  // not application-level readiness.
+  bool input_wait = 7;
 }
 
 message RawInputRequest {
@@ -155,6 +162,11 @@ message RawInputResponse {
   string status = 1;              // "completed", "awaiting_input"
   string screen = 2;              // current terminal screen content
   int32 exit_code = 3;            // set when status = "completed"
+  // True if the PTY read/poll call observed an input-wait packet for this
+  // response. False means no event was observed in that call; it does not
+  // establish that the child is not waiting. Requires guest support and is
+  // not application-level readiness.
+  bool input_wait = 4;
 }
 
 message ResizeRequest {
@@ -188,6 +200,10 @@ message ConnectResponse {
   // Raw PTY bytes. The client owns terminal emulation and sanitization.
   bytes output = 2;
   int32 exit_code = 3;
+  // True if the PTY read/poll call observed an input-wait packet for this
+  // response. False means no event was observed in that call; it does not
+  // establish that the child is not waiting. Requires guest support and is
+  // not application-level readiness.
   bool input_wait = 4;
   bool truncated = 5;
 }

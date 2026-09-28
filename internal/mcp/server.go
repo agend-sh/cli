@@ -692,7 +692,7 @@ func callExec(ctx context.Context, client *agentgrpc.Client, args map[string]any
 	if err != nil {
 		return fmt.Sprintf("exec failed: %v", err), true
 	}
-	return formatExecResponse(resp), false
+	return formatExecResponse(resp, req.Interactive), false
 }
 
 func callInput(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
@@ -705,20 +705,7 @@ func callInput(ctx context.Context, client *agentgrpc.Client, args map[string]an
 		return fmt.Sprintf("input failed: %v", err), true
 	}
 
-	out := fmt.Sprintf("status: %s", resp.Status)
-	if resp.Stdout != "" {
-		out += "\n" + resp.Stdout
-	}
-	if resp.Stderr != "" {
-		out += "\nstderr: " + resp.Stderr
-	}
-	if resp.Status == "completed" {
-		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
-	}
-	if resp.PromptType != "" {
-		out += "\nprompt_type: " + resp.PromptType
-	}
-	return out, false
+	return formatInputResponse(resp), false
 }
 
 func callRawInput(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
@@ -731,14 +718,7 @@ func callRawInput(ctx context.Context, client *agentgrpc.Client, args map[string
 		return fmt.Sprintf("raw_input failed: %v", err), true
 	}
 
-	out := fmt.Sprintf("status: %s", resp.Status)
-	if resp.Screen != "" {
-		out += "\n" + resp.Screen
-	}
-	if resp.Status == "completed" {
-		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
-	}
-	return out, false
+	return formatRawInputResponse(resp), false
 }
 
 func callResize(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
@@ -1056,7 +1036,7 @@ func portArg(args map[string]any) (uint32, error) {
 	return uint32(port), nil
 }
 
-func formatExecResponse(resp *pb.ExecResponse) string {
+func formatExecResponse(resp *pb.ExecResponse, interactive bool) string {
 	if resp.TaskId != "" {
 		return fmt.Sprintf("task_id: %s", resp.TaskId)
 	}
@@ -1077,9 +1057,42 @@ func formatExecResponse(resp *pb.ExecResponse) string {
 	if resp.PromptType != "" {
 		out += "\nprompt_type: " + resp.PromptType
 	}
+	if interactive && (resp.Status == "awaiting_input" || resp.Status == "completed") {
+		out += fmt.Sprintf("\ninput_wait: %t", resp.InputWait)
+	}
 	if resp.Truncated {
 		out += fmt.Sprintf("\ntruncated: showing %d of %d lines", resp.ShownLines, resp.TotalLines)
 	}
+	return out
+}
+
+func formatInputResponse(resp *pb.InputResponse) string {
+	out := fmt.Sprintf("status: %s", resp.Status)
+	if resp.Stdout != "" {
+		out += "\n" + resp.Stdout
+	}
+	if resp.Stderr != "" {
+		out += "\nstderr: " + resp.Stderr
+	}
+	if resp.Status == "completed" {
+		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
+	}
+	if resp.PromptType != "" {
+		out += "\nprompt_type: " + resp.PromptType
+	}
+	out += fmt.Sprintf("\ninput_wait: %t", resp.InputWait)
+	return out
+}
+
+func formatRawInputResponse(resp *pb.RawInputResponse) string {
+	out := fmt.Sprintf("status: %s", resp.Status)
+	if resp.Screen != "" {
+		out += "\n" + resp.Screen
+	}
+	if resp.Status == "completed" {
+		out += fmt.Sprintf("\nexit_code: %d", resp.ExitCode)
+	}
+	out += fmt.Sprintf("\ninput_wait: %t", resp.InputWait)
 	return out
 }
 
