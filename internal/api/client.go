@@ -302,6 +302,76 @@ func (c *Client) StopEnvironment(envID string) (*EnvStopResponse, error) {
 	return doControlPlaneJSON[EnvStopResponse](c, "DELETE", "/environments/"+envID, nil)
 }
 
+// DeleteTimeout bounds waiting for a delete, whose VM stop can take about a
+// minute on a loaded node.
+const DeleteTimeout = 10 * time.Minute
+
+// Delete pacing. Variables so tests can run the loop quickly.
+var (
+	deletePollInterval = 2 * time.Second
+	// Repeating an accepted delete is cheap: the server dispatches another
+	// stop only when the previous attempt has gone stale.
+	deleteResendAfter = time.Minute
+)
+
+// DeleteEnvironmentContext deletes an environment and waits until the control
+// plane reports it deleted. The server stops the VM in the background, so an
+// accepted delete is followed through GET /environments/{id}.
+func (c *Client) DeleteEnvironmentContext(ctx context.Context, envID string) (*EnvStopResponse, error) {
+	resp, err := c.sendDelete(ctx, envID)
+	if err != nil {
+		return nil, err
+	}
+	lastSent := time.Now()
+	for resp.State != "deleted" {
+		if err := sleepContext(ctx, deletePollInterval); err != nil {
+			return nil, fmt.Errorf("delete did not complete: %w", err)
+		}
+		status, err := c.GetEnvironmentContext(ctx, envID)
+		if err != nil {
+			if !retryableColdResetStatusError(err) {
+				return nil, fmt.Errorf("delete status: %w", err)
+			}
+			continue
+		}
+		if status.State == "deleted" {
+			resp.State = "deleted"
+			break
+		}
+		if time.Since(lastSent) >= deleteResendAfter {
+			if resp, err = c.sendDelete(ctx, envID); err != nil {
+				return nil, err
+			}
+			lastSent = time.Now()
+		}
+	}
+	if resp.EnvID == "" {
+		resp.EnvID = envID
+	}
+	return resp, nil
+}
+
+// sendDelete issues one delete, retrying transport failures, 429, and 5xx.
+func (c *Client) sendDelete(ctx context.Context, envID string) (*EnvStopResponse, error) {
+	backoff := deletePollInterval
+	for {
+		resp, err := doControlPlaneJSONContext[EnvStopResponse](ctx, c, "DELETE", "/environments/"+envID, nil)
+		if err == nil {
+			if resp.EnvID != "" && resp.EnvID != envID {
+				return nil, fmt.Errorf("delete returned environment %q, expected %q", resp.EnvID, envID)
+			}
+			return resp, nil
+		}
+		if !retryableColdResetError(err) {
+			return nil, err
+		}
+		if err := sleepContext(ctx, backoff); err != nil {
+			return nil, fmt.Errorf("delete did not complete: %w", err)
+		}
+		backoff = min(backoff*2, coldResetMaxBackoff)
+	}
+}
+
 func (c *Client) WakeEnvironment(envID string) (*EnvWakeResponse, error) {
 	return c.WakeEnvironmentContext(context.Background(), envID)
 }

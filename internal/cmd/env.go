@@ -538,7 +538,10 @@ func newEnvDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			resp, err := client.StopEnvironment(envID)
+			fmt.Printf("Deleting environment %s...\n", envID)
+			ctx, cancel := context.WithTimeout(cmd.Context(), api.DeleteTimeout)
+			defer cancel()
+			resp, err := client.DeleteEnvironmentContext(ctx, envID)
 			if err != nil {
 				return fmt.Errorf("delete failed: %w", err)
 			}
