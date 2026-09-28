@@ -148,6 +148,12 @@ func TestReadWatchQuitKeysIgnoresOtherKeys(t *testing.T) {
 	if quits != 0 {
 		t.Fatalf("quit %d times without a quit key", quits)
 	}
+
+	// A terminal's answer to a query is not a keypress, even with a q in it.
+	readWatchQuitKeys(strings.NewReader("\x1b]l quick title \x1b\\"), func() { quits++ })
+	if quits != 0 {
+		t.Fatal("a terminal query answer quit watch")
+	}
 }
 
 func TestWatchStreamErrorForAnOlderHostWorkerIsFatal(t *testing.T) {

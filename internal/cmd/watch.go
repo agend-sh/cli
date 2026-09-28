@@ -31,9 +31,12 @@ const (
 	// session's own PTY started.
 	watchClearScreen = "\x1b[0m\x1b[H\x1b[2J"
 	// watchResetTerminal undoes modes a mirrored program may have left on:
-	// alternate screen, hidden cursor, mouse reporting, bracketed paste, and
-	// application cursor keys.
-	watchResetTerminal = "\x1b[0m\x1b[?1049l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1l"
+	// alternate screen, hidden cursor, mouse and focus reporting, bracketed
+	// paste, application cursor and keypad keys, and modifyOtherKeys (which
+	// vim enables). Stopping mid-session must not leave the local shell
+	// receiving encoded keys.
+	watchResetTerminal = "\x1b[0m\x1b[?1049l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" +
+		"\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>\x1b[>4m"
 )
 
 // errWatchUnsupported is fatal: retrying the same host worker cannot help.
@@ -151,13 +154,18 @@ func watchStreamError(err error) error {
 }
 
 // readWatchQuitKeys calls quit on q, Ctrl-C, or Ctrl-D, and ignores other
-// keys: watch is read-only.
+// keys: watch is read-only. The mirrored program can make the local terminal
+// answer queries on stdin; an answer starts with ESC, and nothing after an
+// ESC in one read counts as a key.
 func readWatchQuitKeys(stdin io.Reader, quit func()) {
 	buffer := make([]byte, 64)
 	for {
 		read, err := stdin.Read(buffer)
+	keys:
 		for _, key := range buffer[:read] {
 			switch key {
+			case 0x1b:
+				break keys
 			case 'q', 'Q', 0x03, 0x04:
 				quit()
 				return
