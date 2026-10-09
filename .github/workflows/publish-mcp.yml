@@ -1,0 +1,144 @@
+name: Publish MCP Registry
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing release version to publish, without v (for example 1.2.14)"
+        required: true
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MCP_IMAGE: ghcr.io/agend-sh/agend-mcp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Use a stable semantic release version, without v."
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "v${version}^{commit}")"
+          if [[ "$tag_commit" != "$(git rev-parse HEAD)" ]]; then
+            echo "::error::The checked out source must match the release tag."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "revision=$tag_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish container
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.MCP_IMAGE }}:${{ steps.version.outputs.version }}
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
+          annotations: |
+            index:org.opencontainers.image.description=Persistent Linux environments for AI agents, with interactive terminals and HTTPS previews.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  registry:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: v${{ needs.image.outputs.version }}
+
+      - name: Require public image access
+        env:
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          if ! curl -fsSL --retry 3 \
+            'https://ghcr.io/token?service=ghcr.io&scope=repository:agend-sh/agend-mcp:pull' \
+            -o "$RUNNER_TEMP/ghcr-access.json"; then
+            echo "::error::Make the agend-mcp container package public in GitHub, then rerun this job: https://github.com/orgs/agend-sh/packages/container/agend-mcp/settings"
+            exit 1
+          fi
+          image_token="$(jq -er '.token' "$RUNNER_TEMP/ghcr-access.json")"
+          curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $image_token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://ghcr.io/v2/agend-sh/agend-mcp/manifests/$IMAGE_DIGEST" \
+            -o "$RUNNER_TEMP/image-index.json"
+
+      - name: Prepare registry metadata
+        env:
+          RELEASE_VERSION: ${{ needs.image.outputs.version }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          jq --arg version "$RELEASE_VERSION" --arg image "$MCP_IMAGE@$IMAGE_DIGEST" \
+            '.version = $version | .packages[0].identifier = $image' \
+            server.json > "$RUNNER_TEMP/server.json"
+          cp "$RUNNER_TEMP/server.json" server.json
+
+      - name: Save published descriptor
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mcp-server-${{ needs.image.outputs.version }}
+          path: server.json
+          if-no-files-found: error
+
+      - name: Install pinned MCP publisher
+        run: |
+          curl -fsSL --retry 3 \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/mcp-publisher.tar.gz"
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Authenticate with GitHub OIDC
+        run: mcp-publisher login github-oidc
+
+      - name: Publish to the official MCP Registry
+        run: mcp-publisher publish

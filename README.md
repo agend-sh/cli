@@ -102,6 +102,9 @@ Restart or reload your client's MCP integration, then try this prompt:
 
 Your agent discovers the environment and drives it with MCP tools. An Agend account and available environment quota are required; the CLI alone does not provision a free local machine.
 
+For clients that install servers from the official MCP Registry, see the
+[agend-sh Docker package and connection guide](docs/mcp-registry.md).
+
 ## Interactive terminals
 
 **The terminal can report that it entered an input wait.** That gives the agent process feedback while it drives a REPL or terminal app.

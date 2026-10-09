@@ -1,0 +1,14 @@
+# Send only the source and packaging files needed by Dockerfile.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!proto/
+!proto/**
+!Dockerfile
+!docker/
+!docker/entrypoint.sh
+!LICENSE

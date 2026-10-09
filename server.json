@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.agend-sh/agend-sh",
+  "title": "agend-sh",
+  "description": "Persistent Linux environments for AI agents, with interactive terminals and HTTPS previews.",
+  "version": "1.2.14",
+  "websiteUrl": "https://agend.sh",
+  "repository": {
+    "url": "https://github.com/agend-sh/cli",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/agend-sh/cli/main/assets/logo.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/agend-sh/agend-mcp:1.2.14",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "docker",
+      "runtimeArguments": [
+        { "type": "named", "name": "-i" },
+        { "type": "named", "name": "--rm" },
+        { "type": "named", "name": "--init" },
+        { "type": "named", "name": "--env", "value": "AGEND_API_TOKEN" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "AGEND_API_TOKEN",
+          "description": "Your Agend account token. Sign in with agend login, then follow docs/mcp-registry.md to load the active account token. An Agend account and available environment quota are required.",
+          "format": "string",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
