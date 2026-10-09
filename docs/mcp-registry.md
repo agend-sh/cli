@@ -1,8 +1,9 @@
 # agend-sh in the official MCP Registry
 
 The registry name is **`io.github.agend-sh/agend-sh`** and the display name is
-**agend-sh**. The registry publishes installation metadata for the local stdio
-MCP server. Agend hosts the Linux environments that the tools operate on.
+**agend-sh**. View the [published registry record](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.agend-sh%2Fagend-sh/versions/latest).
+The registry publishes installation metadata for the local stdio MCP server.
+Agend hosts the Linux environments that the tools operate on.
 
 The container package supports **linux/amd64 and linux/arm64**. Docker runs it
 on Linux, macOS, or Windows with Linux containers enabled. An Agend account
@@ -119,8 +120,13 @@ the normal native-binary release workflow. The registry workflow:
 5. Uploads that descriptor as a workflow artifact.
 6. Authenticates with GitHub OIDC and publishes the descriptor to the registry.
 
-**First publication:** GitHub creates new container packages as private. An
-organization owner must change only the `agend-mcp` package to **Public** in
+**First publication:** In the [organization's package settings](https://github.com/organizations/agend-sh/settings/packages),
+enable **Public** under **Package Creation**. If this policy is disabled, the
+package's visibility control says "Setting is disabled by organization
+administrators."
+
+GitHub creates new container packages as private. An organization owner must
+change the `agend-mcp` package to **Public** in
 [package settings](https://github.com/orgs/agend-sh/packages/container/agend-mcp/settings).
 Then rerun the failed registry job. Later releases use the same public package.
 

@@ -19,7 +19,7 @@
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/agend-sh/agend-mcp:1.2.14",
+      "identifier": "ghcr.io/agend-sh/agend-mcp@sha256:4462e2571be0e69003e1be93255e04523342e1e5aa17482ec3d63bd7506bb82f",
       "transport": {
         "type": "stdio"
       },

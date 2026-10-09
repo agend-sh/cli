@@ -102,8 +102,9 @@ Restart or reload your client's MCP integration, then try this prompt:
 
 Your agent discovers the environment and drives it with MCP tools. An Agend account and available environment quota are required; the CLI alone does not provision a free local machine.
 
-For clients that install servers from the official MCP Registry, see the
-[agend-sh Docker package and connection guide](docs/mcp-registry.md).
+**agend-sh is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.agend-sh%2Fagend-sh/versions/latest)**
+as `io.github.agend-sh/agend-sh`. For Docker-based installation, see the
+[container package and connection guide](docs/mcp-registry.md).
 
 ## Interactive terminals
 
