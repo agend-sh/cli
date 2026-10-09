@@ -105,6 +105,7 @@ Your agent discovers the environment and drives it with MCP tools. An Agend acco
 **agend-sh is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.agend-sh%2Fagend-sh/versions/latest)**
 as `io.github.agend-sh/agend-sh`. For Docker-based installation, see the
 [container package and connection guide](docs/mcp-registry.md).
+For clients that support MCPB extensions, see the [bundle guide](docs/smithery.md).
 
 ## Interactive terminals
 
