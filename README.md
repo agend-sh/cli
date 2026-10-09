@@ -402,7 +402,7 @@ Credentials and per-account environment selection live in `~/.config/agend/crede
 
 ## Development
 
-Requires **Go 1.26.7+**. From a source checkout:
+Requires **Go 1.26.9+**. From a source checkout:
 
 ```sh
 git clone https://github.com/agend-sh/cli.git
