@@ -455,4 +455,4 @@ The MCP bridge resolves each environment's endpoint on demand, keeps a connectio
 
 ## License
 
-MIT.
+[MIT](LICENSE).
