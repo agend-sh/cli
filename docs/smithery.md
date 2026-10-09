@@ -24,8 +24,8 @@ the standard library. The bundle contains no account credentials.
 3. Start the bundle with its token configuration left blank. It reads the
    active account token from your local CLI credentials at startup, without
    printing it or changing the file.
-4. Ask the agent to call `list_environments`, then use an environment ID or
-   name in subsequent calls. If needed, use `env_create` within your quota.
+4. Ask the agent to call `environments.list`, then use an environment ID or
+   name in subsequent calls. If needed, use `environments.create` within your quota.
 
 For an explicit token, follow the
 [container authentication guide](https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#connect-using-the-container)
@@ -41,16 +41,34 @@ format and the public `https://api.agend.sh` endpoint.
 
 ## Terminals and files
 
-Use `shell_exec` with `interactive=true` to launch a REPL or terminal app.
-Continue through `shell_send_raw` and keep the MCP connection open during
+Use `shell.exec` with `interactive=true` to launch a REPL or terminal app.
+Continue through `shell.send_raw` and keep the MCP connection open during
 interaction. An `input_wait` result is a per-response observation of a guest
 terminal input-wait event, not proof of application readiness.
 
 Remote files persist in the Agend environment. Local transfers use the
 container's `/workspace`; host folders are not mounted automatically. Use
-`file_write` for remote text files, or follow the
+`files.write` for remote text files, or follow the
 [workspace mount guide](https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#local-file-transfers)
 to configure direct Docker usage for transfers to or from your computer.
+
+## Tool names
+
+The bundle groups its 23 tools into short paths for discovery. It also accepts
+the original native CLI names in tool calls for compatibility.
+
+| Group                    | Bundle tools                                                                                                                                                   |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Environments             | `environments.list`, `environments.create`, `environments.update`, `environments.status`, `environments.stats`, `environments.wake`, `environments.cold_reset` |
+| Terminals                | `shell.exec`, `shell.provide_input`, `shell.send_raw`, `shell.resize`, `shell.interrupt`                                                                       |
+| Background tasks         | `shell.tasks.output`, `shell.tasks.stop`                                                                                                                       |
+| Files                    | `files.download`, `files.upload`, `files.write`, `files.move`                                                                                                  |
+| HTTPS previews           | `ports.expose`, `ports.unexpose`, `ports.list`                                                                                                                 |
+| Profiles and credentials | `profiles.list`, `config.reload`                                                                                                                               |
+
+For example, the bundle's `shell.exec` routes to the native CLI's `shell_exec`.
+Arguments and terminal input are unchanged. Direct `agend mcp` and Docker
+usage retain the native CLI names.
 
 ## Build and publish
 

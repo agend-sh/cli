@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { image } = require("./image.json");
-const { enrichMessage } = require("./protocol.cjs");
+const { enrichMessage, translateRequest } = require("./protocol.cjs");
 
 function accountToken() {
   const configured = process.env.AGEND_API_TOKEN?.trim();
@@ -55,9 +55,26 @@ const child = spawn(
   },
 );
 
-// Forward requests unchanged; enrich newline-delimited MCP responses using
-// the same definitions included in Smithery's published server card.
-process.stdin.pipe(child.stdin);
+// Translate only grouped tool names; retain argument values, including raw
+// terminal input. Responses use the same definitions as the server card.
+const requests = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+requests.on("line", (line) => {
+  let output = line;
+  try {
+    const request = JSON.parse(line);
+    const originalName = request.params?.name;
+    translateRequest(request);
+    if (request.params?.name !== originalName) output = JSON.stringify(request);
+  } catch {
+    // Let the upstream bridge report malformed requests.
+  }
+  if (!child.stdin.write(output + "\n")) requests.pause();
+});
+requests.on("close", () => child.stdin.end());
+child.stdin.on("drain", () => requests.resume());
 const lines = readline.createInterface({
   input: child.stdout,
   crlfDelay: Infinity,
@@ -91,7 +108,7 @@ child.once("error", (error) => {
 });
 
 child.once("close", (code, signal) => {
-  process.stdin.unpipe(child.stdin);
+  requests.close();
   process.stdin.pause();
   process.exitCode = code ?? (signal === "SIGINT" ? 130 : 143);
 });
