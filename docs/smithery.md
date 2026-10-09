@@ -21,15 +21,23 @@ the standard library. The bundle contains no account credentials.
    your existing Agend account.
 2. Install the [Agend CLI](https://github.com/agend-sh/cli#quick-start) and run
    `agend login`.
-3. Follow the [container authentication guide](https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#connect-using-the-container)
-   to load your active account token without printing it.
-4. Supply that token in the bundle's **Agend account token** configuration
-   field. The field is marked required and sensitive.
-5. Ask the agent to call `list_environments`, then use an environment ID or
+3. Start the bundle with its token configuration left blank. It reads the
+   active account token from your local CLI credentials at startup, without
+   printing it or changing the file.
+4. Ask the agent to call `list_environments`, then use an environment ID or
    name in subsequent calls. If needed, use `env_create` within your quota.
 
-Refresh the configured token after reauthentication when it expires. The
-bundle does not inherit your native CLI's selected environment.
+For an explicit token, follow the
+[container authentication guide](https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#connect-using-the-container)
+and supply it in **Agend account token (optional override)**. The field is
+sensitive. Authentication is still required even though this field is optional.
+The bundle also accepts a token inherited through `AGEND_API_TOKEN`.
+
+After `agend login` or switching CLI accounts, restart the bundle. Refresh any
+configured override when its token expires. The bundle reads only the active
+account's token; it does not inherit the CLI's selected environment or mount
+your credential directory into Docker. It supports the current CLI credential
+format and the public `https://api.agend.sh` endpoint.
 
 ## Terminals and files
 
@@ -46,7 +54,8 @@ to configure direct Docker usage for transfers to or from your computer.
 
 ## Build and publish
 
-From a Git checkout of this repository, with Python 3 and Go installed:
+From a Git checkout of this repository, with Python 3, Go, and Node.js 20+
+installed:
 
 ```sh
 python3 mcpb/build.py
@@ -56,6 +65,14 @@ The builder writes `dist/mcpb/agend-sh-1.2.14.mcpb`, its checksum, the generated
 manifest, the full server card, and a Smithery release payload. It exports all
 23 tool definitions from the exact source commit in `mcpb/server/image.json`.
 It never starts the bridge or contacts an Agend environment.
+
+The bundle adds tool annotations and structured output through a small stdio
+adapter. Every tool declares an object with a required `text` string and
+returns that exact shape in `structuredContent`. Original MCP text content,
+errors, request IDs, and terminal input remain intact. The server card and
+live tool definitions use the same adapter metadata. File writes, shell
+commands, and cold resets are identified as potentially destructive; calls
+that connect to a sleeping guest are not labelled read-only.
 
 The archive has an explicit file list, a pinned image digest, and fixed ZIP
 timestamps. Rebuild after updating the image version, source commit, and

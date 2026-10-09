@@ -48,6 +48,18 @@ def main():
             )
         )
 
+    # The bundle adapter publishes the same annotations and output schema
+    # that it adds to the live MCP protocol. No metadata-only promises.
+    adapter = ROOT / "mcpb" / "server" / "protocol.cjs"
+    tools = json.loads(subprocess.check_output(
+        ["node", "-e",
+         'const fs = require("node:fs"); '
+         'const {enrichTools} = require(process.argv[1]); '
+         'process.stdout.write(JSON.stringify(enrichTools(JSON.parse(fs.readFileSync(0, "utf8")))));',
+         str(adapter)],
+        input=encoded_json(tools),
+    ))
+
     manifest["tools"] = [
         {"name": tool["name"], "description": tool["description"]} for tool in tools
     ]
@@ -74,7 +86,6 @@ def main():
                 "writeOnly": True,
             }
         },
-        "required": ["api_token"],
         "additionalProperties": False,
     }
     payload = {
@@ -88,6 +99,7 @@ def main():
         "server-card.json": encoded_json(card),
         "server/launch.cjs": (ROOT / "mcpb" / "server" / "launch.cjs").read_bytes(),
         "server/image.json": encoded_json(package),
+        "server/protocol.cjs": adapter.read_bytes(),
         "README.md": (ROOT / "docs" / "smithery.md").read_bytes(),
         "LICENSE": (ROOT / "LICENSE").read_bytes(),
         "assets/logo.svg": (ROOT / "assets" / "logo.svg").read_bytes(),

@@ -4,7 +4,7 @@
   "display_name": "agend-sh",
   "version": "1.2.14",
   "description": "Persistent Linux environments for AI agents, with interactive terminals and HTTPS previews.",
-  "long_description": "Run commands, drive REPLs and terminal apps, edit files, collect background task output, and expose development servers through HTTPS previews. This bundle launches the published Agend CLI image locally through Docker. Requires Docker with Linux containers, Node.js 20+, an Agend account, and available environment quota. Register for a free seven-day account at https://agend.sh/account?signup=1, then authenticate with agend login and supply your account token. Interactive input_wait results describe observed terminal input-wait events, not application readiness. Local file transfers use the container's /workspace; host directories are not mounted automatically.",
+  "long_description": "Run commands, drive REPLs and terminal apps, edit files, collect background task output, and expose development servers through HTTPS previews. This bundle launches the published Agend CLI image locally through Docker. Requires Docker with Linux containers, Node.js 20+, an Agend account, and available environment quota. Register for a free seven-day account at https://agend.sh/account?signup=1, then authenticate with agend login. The bundle reads your active CLI account token locally at startup; an optional sensitive configuration field can override it. Every tool publishes behavior annotations and an output schema backed by structuredContent.text, while preserving its original text content. Interactive input_wait results describe observed terminal input-wait events, not application readiness. Local file transfers use the container's /workspace; host directories are not mounted automatically.",
   "author": {
     "name": "Agend LLC",
     "email": "hello@agend.sh",
@@ -15,7 +15,7 @@
     "url": "https://github.com/agend-sh/cli"
   },
   "homepage": "https://agend.sh",
-  "documentation": "https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md",
+  "documentation": "https://github.com/agend-sh/cli/blob/main/docs/smithery.md",
   "support": "https://github.com/agend-sh/cli/issues",
   "license": "MIT",
   "privacy_policies": ["https://agend.sh/privacy"],
@@ -42,9 +42,10 @@
   "user_config": {
     "api_token": {
       "type": "string",
-      "title": "Agend account token",
-      "description": "Sign in with agend login, then load your active account token as described at https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#connect-using-the-container. An Agend account and available environment quota are required. Refresh this value when the token expires.",
-      "required": true,
+      "title": "Agend account token (optional override)",
+      "description": "Leave blank to reuse the active account from agend login on this computer. Optionally supply a token as described at https://github.com/agend-sh/cli/blob/main/docs/mcp-registry.md#connect-using-the-container. An Agend account and available environment quota are required. After login or account switching, restart the bundle; refresh any override when its token expires.",
+      "required": false,
+      "default": "",
       "sensitive": true
     }
   }
