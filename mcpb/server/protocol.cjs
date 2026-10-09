@@ -119,7 +119,8 @@ function translateRequest(message) {
     message.jsonrpc === "2.0" &&
     message.method === "tools/call" &&
     message.params &&
-    originalNames[message.params.name]
+    typeof message.params.name === "string" &&
+    Object.hasOwn(originalNames, message.params.name)
   ) {
     message.params.name = originalNames[message.params.name];
   }
