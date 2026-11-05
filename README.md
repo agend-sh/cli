@@ -294,7 +294,11 @@ The CLI exposes **23 tools**. Call `list_environments` to discover IDs and names
 
 `interactive` and `run_in_background` are mutually exclusive. Background execution returns a `task_id` for the task tools.
 
-Local paths in `file_upload` and `file_download` are confined to the MCP server's working directory, or to `AGEND_LOCAL_ROOT` if you set it in the server's environment. Downloads return transfer metadata; read text with `shell_exec` or open the downloaded local file. For large files, downloading directly inside the remote environment with `curl` or `wget` is usually faster.
+Local paths in `file_upload` and `file_download` are confined to the directory where the MCP server starts, or to the narrower directory in `AGEND_LOCAL_ROOT`. The server pins that directory and performs descriptor/handle-rooted opens, so symlink and path-swap races cannot escape it. If the implicit directory would be your home directory or a filesystem root, startup fails closed for local file tools until you set an explicit `AGEND_LOCAL_ROOT`.
+
+Set `AGEND_LOCAL_ACCESS=read-only` to allow local reads for `file_upload` while disabling local writes by `file_download`. The default is `confined`. `AGEND_LOCAL_ACCESS=unrestricted` is an explicit escape hatch that permits both tools to access any path available to your user; the server emits a warning when it is enabled. Downloads are staged and checksum-verified before an atomic rename, so an interrupted or corrupt transfer does not replace the destination.
+
+Downloads return transfer metadata; read text with `shell_exec` or open the downloaded local file. For large files, downloading directly inside the remote environment with `curl` or `wget` is usually faster.
 
 ## CLI reference
 
@@ -399,7 +403,7 @@ The updater verifies the signed checksum manifest and archive before replacing t
 | New environment is not reachable yet | Inspect `agend env status`; allow the tunnel to come online, then retry `agend ping`. |
 | Input reports no active session | Start the app with `interactive: true`. Ordinary foreground commands do not keep stdin open for later tool calls. |
 | `connect` reports `no active session waiting for input` when you exit | This can occur intermittently in the current backend after a shell has run successfully. See the [verification report](docs/readme-verification.md); start a new `connect` session if you need to continue. |
-| Local file path is rejected | Keep it inside the MCP working directory or configure `AGEND_LOCAL_ROOT`. |
+| Local file path is rejected | Keep it inside the MCP working directory, configure a narrow `AGEND_LOCAL_ROOT`, or check `AGEND_LOCAL_ACCESS`. Use `unrestricted` only when you intentionally accept access to every path available to your user. |
 | Browser preview URL does not open yet | Check that the service is running and bound to `0.0.0.0`; allow tunnel/DNS propagation, then inspect `port_list`. If the hostname still does not resolve, check your DNS resolver. |
 | Environment appears stuck | Inspect `env status` first. Use a cold reset only after ordinary reconnect/wake recovery is insufficient. |
 | Corporate proxy blocks connectivity | Set `HTTPS_PROXY` / `HTTP_PROXY`; Go binaries do not use Windows system proxy settings. |

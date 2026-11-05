@@ -47,12 +47,14 @@ type rpcError struct {
 }
 
 type Server struct {
-	pool    *ConnPool
-	api     *api.Client
-	version string
-	scanner *bufio.Scanner
-	writer  io.Writer
-	mu      sync.Mutex // guards writer
+	pool     *ConnPool
+	api      *api.Client
+	version  string
+	local    *localFiles
+	localErr error
+	scanner  *bufio.Scanner
+	writer   io.Writer
+	mu       sync.Mutex // guards writer
 
 	inflightMu sync.Mutex
 	inflight   map[string]context.CancelFunc // in-flight tools/call by request id
@@ -65,10 +67,13 @@ func NewServer(apiClient *api.Client, version string) *Server {
 	// large lines (cap 64MB) while starting small.
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	local, localErr := newLocalFiles()
 	return &Server{
 		pool:     NewConnPool(apiClient),
 		api:      apiClient,
 		version:  version,
+		local:    local,
+		localErr: localErr,
 		scanner:  scanner,
 		writer:   os.Stdout,
 		inflight: make(map[string]context.CancelFunc),
@@ -82,6 +87,9 @@ const maxCallDuration = 10 * time.Minute
 
 func (s *Server) Run(ctx context.Context) error {
 	defer s.pool.CloseAll()
+	if s.local != nil {
+		defer s.local.Close()
+	}
 	s.pool.BindContext(ctx)
 
 	for s.scanner.Scan() {
@@ -261,7 +269,7 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	// Reject deterministic client-side errors before resolving or connecting to
 	// an environment. Besides returning faster, this ensures local filesystem
 	// policy failures can never be mistaken for a stale remote endpoint.
-	if err := validateToolArguments(name, args); err != nil {
+	if err := validateToolArguments(s.local, s.localErr, name, args); err != nil {
 		return err.Error(), true
 	}
 
@@ -311,11 +319,11 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	conn := s.pool.Get(envID)
 
 	return conn.Execute(ctx, recovery.IsIdempotent(name), func(client *agentgrpc.Client) (string, bool) {
-		return dispatchTool(ctx, client, name, args)
+		return dispatchTool(ctx, client, s.local, name, args)
 	})
 }
 
-func validateToolArguments(name string, args map[string]any) error {
+func validateToolArguments(local *localFiles, localErr error, name string, args map[string]any) error {
 	switch name {
 	case "shell_exec":
 		interactive, _ := args["interactive"].(bool)
@@ -331,11 +339,17 @@ func validateToolArguments(name string, args map[string]any) error {
 			return err
 		}
 	case "file_download":
-		if _, err := resolveLocalPath(strArg(args, "local_path")); err != nil {
+		if localErr != nil {
+			return fmt.Errorf("download failed: local filesystem policy: %w", localErr)
+		}
+		if _, err := local.target(strArg(args, "local_path"), true); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	case "file_upload":
-		if _, err := resolveLocalPath(strArg(args, "local_path")); err != nil {
+		if localErr != nil {
+			return fmt.Errorf("upload failed: local filesystem policy: %w", localErr)
+		}
+		if _, err := local.target(strArg(args, "local_path"), false); err != nil {
 			return fmt.Errorf("upload failed: %w", err)
 		}
 	case "port_expose", "port_unexpose":
@@ -618,7 +632,7 @@ func (s *Server) reloadConfig() (string, bool) {
 }
 
 // dispatchTool routes to the appropriate gRPC call.
-func dispatchTool(ctx context.Context, client *agentgrpc.Client, name string, args map[string]any) (string, bool) {
+func dispatchTool(ctx context.Context, client *agentgrpc.Client, local *localFiles, name string, args map[string]any) (string, bool) {
 	switch name {
 	case "shell_exec":
 		return callExec(ctx, client, args)
@@ -635,9 +649,9 @@ func dispatchTool(ctx context.Context, client *agentgrpc.Client, name string, ar
 	case "shell_task_stop":
 		return callTaskStop(ctx, client, args)
 	case "file_download":
-		return callFileDownload(ctx, client, args)
+		return callFileDownload(ctx, client, local, args)
 	case "file_upload":
-		return callFileUpload(ctx, client, args)
+		return callFileUpload(ctx, client, local, args)
 	case "file_write":
 		return callFileWrite(ctx, client, args)
 	case "file_move":
@@ -788,13 +802,9 @@ func callTaskStop(ctx context.Context, client *agentgrpc.Client, args map[string
 
 // callFileDownload downloads a file from the remote environment to a local path.
 // Uses chunked transfer internally. No file content enters the LLM context.
-func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
+func callFileDownload(ctx context.Context, client *agentgrpc.Client, local *localFiles, args map[string]any) (string, bool) {
 	remotePath := strArg(args, "remote_path")
-
-	localPath, err := resolveLocalPath(strArg(args, "local_path"))
-	if err != nil {
-		return fmt.Sprintf("download failed: %v", err), true
-	}
+	localPath := strArg(args, "local_path")
 
 	const chunkSize = 1024 * 1024 // 1MB
 
@@ -808,11 +818,12 @@ func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[st
 		return fmt.Sprintf("download failed: %v", err), true
 	}
 
-	f, err := createLocalFile(localPath)
+	staged, err := local.createDownload(localPath)
 	if err != nil {
 		return fmt.Sprintf("create local file: %v", err), true
 	}
-	defer f.Close()
+	defer staged.Abort()
+	f := staged.File()
 
 	hasher := sha256.New()
 	out := io.MultiWriter(f, hasher)
@@ -846,26 +857,28 @@ func callFileDownload(ctx context.Context, client *agentgrpc.Client, args map[st
 	if fileChecksum != "" {
 		actual := hex.EncodeToString(hasher.Sum(nil))
 		if actual != strings.ToLower(fileChecksum) {
-			f.Close()
-			os.Remove(localPath)
-			return fmt.Sprintf("download failed: checksum mismatch (expected %s, got %s) — file removed, the remote file may have changed mid-transfer; retry", fileChecksum, actual), true
+			return fmt.Sprintf("download failed: checksum mismatch (expected %s, got %s) — staged file removed, the remote file may have changed mid-transfer; retry", fileChecksum, actual), true
 		}
 	}
+	if err := staged.Commit(); err != nil {
+		return fmt.Sprintf("download failed: %v", err), true
+	}
 
-	return fmt.Sprintf("downloaded %s → %s (%d bytes, sha256: %s)", remotePath, localPath, totalSize, fileChecksum), false
+	return fmt.Sprintf("downloaded %s → %s (%d bytes, sha256: %s)", remotePath, staged.DisplayPath(), totalSize, fileChecksum), false
 }
 
 // callFileUpload uploads a local file to the remote environment.
 // Uses chunked transfer internally. Atomic write on the remote side.
-func callFileUpload(ctx context.Context, client *agentgrpc.Client, args map[string]any) (string, bool) {
+func callFileUpload(ctx context.Context, client *agentgrpc.Client, local *localFiles, args map[string]any) (string, bool) {
 	remotePath := strArg(args, "remote_path")
+	localPath := strArg(args, "local_path")
 
-	localPath, err := resolveLocalPath(strArg(args, "local_path"))
+	file, displayPath, err := local.openUpload(localPath)
 	if err != nil {
-		return fmt.Sprintf("upload failed: %v", err), true
+		return fmt.Sprintf("read local file: %v", err), true
 	}
-
-	data, err := os.ReadFile(localPath)
+	defer file.Close()
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return fmt.Sprintf("read local file: %v", err), true
 	}
@@ -902,7 +915,7 @@ func callFileUpload(ctx context.Context, client *agentgrpc.Client, args map[stri
 		}
 	}
 
-	result := fmt.Sprintf("uploaded %s → %s (%d bytes)", localPath, remotePath, totalSize)
+	result := fmt.Sprintf("uploaded %s → %s (%d bytes)", displayPath, remotePath, totalSize)
 	if lastResp != nil && lastResp.Checksum != "" {
 		result += fmt.Sprintf(", sha256: %s", lastResp.Checksum)
 	}

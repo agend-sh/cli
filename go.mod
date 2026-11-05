@@ -1,6 +1,6 @@
 module github.com/agend-sh/cli
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/acolita/go-add-mcp v0.3.2

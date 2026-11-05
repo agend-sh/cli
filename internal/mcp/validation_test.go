@@ -7,7 +7,7 @@ import (
 
 func TestValidateToolArgumentsRejectsLocalErrorsBeforeConnection(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("AGEND_LOCAL_ROOT", root)
+	local := newTestLocalFiles(t, root, "confined")
 
 	tests := []struct {
 		name string
@@ -46,7 +46,7 @@ func TestValidateToolArgumentsRejectsLocalErrorsBeforeConnection(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateToolArguments(test.name, test.args)
+			err := validateToolArguments(local, nil, test.name, test.args)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateToolArguments() = %v, want error containing %q", err, test.want)
 			}
@@ -56,7 +56,7 @@ func TestValidateToolArgumentsRejectsLocalErrorsBeforeConnection(t *testing.T) {
 
 func TestValidateToolArgumentsAcceptsValidLocalInputs(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("AGEND_LOCAL_ROOT", root)
+	local := newTestLocalFiles(t, root, "confined")
 
 	for _, test := range []struct {
 		name string
@@ -70,7 +70,7 @@ func TestValidateToolArgumentsAcceptsValidLocalInputs(t *testing.T) {
 		{"shell_task_output", map[string]any{"task_id": "task_1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := validateToolArguments(test.name, test.args); err != nil {
+			if err := validateToolArguments(local, nil, test.name, test.args); err != nil {
 				t.Fatalf("validateToolArguments() = %v", err)
 			}
 		})

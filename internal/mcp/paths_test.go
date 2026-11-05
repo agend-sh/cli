@@ -1,117 +1,217 @@
 package mcp
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestResolveLocalPath(t *testing.T) {
-	root := t.TempDir()
-	// Resolve the temp dir itself — on macOS /tmp is a symlink.
-	root, err := filepath.EvalSymlinks(root)
+func newTestLocalFiles(t *testing.T, root, access string) *localFiles {
+	t.Helper()
+	t.Setenv("AGEND_LOCAL_ROOT", root)
+	t.Setenv("AGEND_LOCAL_ACCESS", access)
+	files, err := newLocalFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGEND_LOCAL_ROOT", root)
+	t.Cleanup(func() { _ = files.Close() })
+	return files
+}
 
-	outside := t.TempDir()
-	secret := filepath.Join(outside, "id_rsa")
-	if err := os.WriteFile(secret, []byte("private"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("x"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(secret, filepath.Join(root, "sneaky")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(root, "sneakydir")); err != nil {
-		t.Fatal(err)
-	}
+func TestLocalTargetConfinesPaths(t *testing.T) {
+	root := t.TempDir()
+	files := newTestLocalFiles(t, root, "confined")
+	outside := filepath.Join(filepath.Dir(root), "outside-secret")
 
 	tests := []struct {
 		name    string
 		path    string
-		wantErr string // empty = expect success
+		wantErr string
 	}{
 		{"relative inside root", "ok.txt", ""},
 		{"absolute inside root", filepath.Join(root, "ok.txt"), ""},
 		{"new file inside root", "new/sub/file.bin", ""},
 		{"empty", "", "required"},
-		{"absolute outside root", secret, "outside"},
-		{"traversal escape", "../" + filepath.Base(outside) + "/id_rsa", "outside"},
-		{"symlink file pointing outside", "sneaky", "outside"},
-		{"symlink dir pointing outside", "sneakydir/id_rsa", "outside"},
+		{"root itself", root, "not a file"},
+		{"absolute outside root", outside, "outside"},
+		{"traversal escape", "../outside-secret", "outside"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveLocalPath(tc.path)
+			target, err := files.target(tc.path, false)
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Fatalf("resolveLocalPath(%q) error: %v", tc.path, err)
+					t.Fatalf("target(%q) error: %v", tc.path, err)
 				}
-				if got != root && !strings.HasPrefix(got, root+string(filepath.Separator)) {
-					t.Errorf("resolved path %q escapes root %q", got, root)
+				if target.display != root && !strings.HasPrefix(target.display, root+string(filepath.Separator)) {
+					t.Errorf("display path %q escapes root %q", target.display, root)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("resolveLocalPath(%q) = %q, want error containing %q", tc.path, got, tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("error %q does not contain %q", err, tc.wantErr)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("target(%q) = %#v, %v; want error containing %q", tc.path, target, err, tc.wantErr)
 			}
 		})
 	}
 }
 
-// A root that already ends in the separator (filesystem root "/", Windows
-// drive roots like "C:\") must not reject everything under it.
-func TestResolveLocalPathAtFilesystemRoot(t *testing.T) {
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
+func TestOpenUploadRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "id_rsa")
+	if err := os.WriteFile(secret, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "sneaky")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "sneakydir")); err != nil {
 		t.Fatal(err)
 	}
 
-	// "/" on unix, "C:\" (the temp dir's volume) on windows.
-	root := filepath.VolumeName(dir) + string(filepath.Separator)
-	t.Setenv("AGEND_LOCAL_ROOT", root)
-	file := filepath.Join(dir, "ok.txt")
-	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := resolveLocalPath(file)
-	if err != nil {
-		t.Fatalf("resolveLocalPath(%q) with root %q: %v", file, root, err)
-	}
-	if got != file {
-		t.Errorf("resolved %q, want %q", got, file)
+	files := newTestLocalFiles(t, root, "confined")
+	for _, path := range []string{"sneaky", filepath.Join("sneakydir", "id_rsa")} {
+		if file, _, err := files.openUpload(path); err == nil {
+			file.Close()
+			t.Fatalf("openUpload(%q) followed a symlink outside the root", path)
+		}
 	}
 }
 
-func TestCreateLocalFileRefusesSymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("x"), 0644); err != nil {
+func TestPinnedRootSurvivesPathReplacement(t *testing.T) {
+	parent := t.TempDir()
+	rootPath := filepath.Join(parent, "root")
+	movedPath := filepath.Join(parent, "moved")
+	outside := filepath.Join(parent, "outside")
+	for _, dir := range []string{rootPath, outside} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "value"), []byte("inside"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "value"), []byte("outside"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := createLocalFile(link); err == nil {
-		t.Error("createLocalFile followed a symlink")
+	files := newTestLocalFiles(t, rootPath, "confined")
+	if err := os.Rename(rootPath, movedPath); err != nil {
+		t.Fatal(err)
 	}
-	f, err := createLocalFile(filepath.Join(dir, "fresh"))
+	if err := os.Symlink(outside, rootPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	file, _, err := files.openUpload("value")
 	if err != nil {
-		t.Fatalf("createLocalFile on fresh path: %v", err)
+		t.Fatal(err)
 	}
-	f.Close()
+	defer file.Close()
+	got, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "inside" {
+		t.Fatalf("pinned root read %q, want original root content", got)
+	}
+}
+
+func TestStagedDownloadReplacesSymlinkWithoutFollowingIt(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("do not replace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "result")
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	files := newTestLocalFiles(t, root, "confined")
+	staged, err := files.createDownload("result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Abort()
+	if _, err := staged.File().Write([]byte("download")); err != nil {
+		t.Fatal(err)
+	}
+	if err := staged.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "download" {
+		t.Fatalf("target = %q, want downloaded content", got)
+	}
+	outsideData, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outsideData) != "do not replace" {
+		t.Fatalf("outside file changed to %q", outsideData)
+	}
+}
+
+func TestReadOnlyAllowsUploadButBlocksDownload(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "input"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := newTestLocalFiles(t, root, "read-only")
+	file, _, err := files.openUpload("input")
+	if err != nil {
+		t.Fatalf("read-only upload source: %v", err)
+	}
+	file.Close()
+	if _, err := files.createDownload("output"); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("createDownload error = %v, want read-only rejection", err)
+	}
+}
+
+func TestUnrestrictedOptInAllowsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "input")
+	if err := os.WriteFile(outside, []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := newTestLocalFiles(t, root, "unrestricted")
+	file, display, err := files.openUpload(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	if display != outside {
+		t.Fatalf("display = %q, want %q", display, outside)
+	}
+}
+
+func TestInvalidLocalAccessModeFailsClosed(t *testing.T) {
+	t.Setenv("AGEND_LOCAL_ROOT", t.TempDir())
+	t.Setenv("AGEND_LOCAL_ACCESS", "maybe")
+	if _, err := newLocalFiles(); err == nil || !strings.Contains(err.Error(), "invalid AGEND_LOCAL_ACCESS") {
+		t.Fatalf("newLocalFiles error = %v", err)
+	}
+}
+
+func TestDangerousImplicitRoot(t *testing.T) {
+	root := filepath.VolumeName(string(filepath.Separator)) + string(filepath.Separator)
+	if !dangerousImplicitRoot(root) {
+		t.Errorf("filesystem root %q should be dangerous", root)
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && !dangerousImplicitRoot(home) {
+		t.Errorf("home %q should be dangerous", home)
+	}
+	if runtime.GOOS != "windows" && dangerousImplicitRoot(t.TempDir()) {
+		t.Error("temporary directory should not be dangerous")
+	}
 }
