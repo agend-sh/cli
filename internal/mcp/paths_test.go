@@ -83,6 +83,12 @@ func TestOpenUploadRejectsSymlinkEscape(t *testing.T) {
 }
 
 func TestPinnedRootSurvivesPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows intentionally prevents renaming an open directory handle. The
+		// reparse-point escape checks below exercise the Windows root boundary;
+		// root-path replacement is a Unix attack shape.
+		t.Skip("Windows does not permit renaming an open root handle")
+	}
 	parent := t.TempDir()
 	rootPath := filepath.Join(parent, "root")
 	movedPath := filepath.Join(parent, "moved")
