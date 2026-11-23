@@ -91,7 +91,7 @@ func Dial(ctx context.Context, addr, secret, sessionToken string) (*Client, erro
 	conn, err := grpc.DialContext(ctx, addr, opts...)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("environment unreachable — it may have stopped or the tunnel expired. Run 'agend env status' to check")
+			return nil, fmt.Errorf("environment unreachable — it may have stopped or the tunnel expired. Run 'agend env status <env-id>' to check")
 		}
 		return nil, fmt.Errorf("dial agentd at %s: %w", addr, err)
 	}

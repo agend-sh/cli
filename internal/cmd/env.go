@@ -53,6 +53,8 @@ func newEnvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "env",
 		Short: "Manage environments",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 
 	cmd.AddCommand(newEnvListCmd())
@@ -62,7 +64,6 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvDeleteCmd())
 	cmd.AddCommand(newEnvWakeCmd())
 	cmd.AddCommand(newEnvColdResetCmd())
-	cmd.AddCommand(newEnvUseCmd())
 	cmd.AddCommand(newEnvAcquireCmd())
 	cmd.AddCommand(newEnvReleaseCmd())
 	cmd.AddCommand(newEnvHeartbeatCmd())
@@ -70,96 +71,11 @@ func newEnvCmd() *cobra.Command {
 	return cmd
 }
 
-// newEnvUseCmd makes an owned environment the active CLI target. Restored
-// environments are created out of band and may already be running, so "wake"
-// is neither semantically correct nor accepted by the control plane. Reauth
-// issues fresh one-time authority for the selected running environment instead
-// of trusting the possibly-consumed secret returned by its status record.
-func newEnvUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "use <env-id>",
-		Short: "Select an environment for CLI commands",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := apiClient()
-			if err != nil {
-				return err
-			}
-			envID := args[0]
-			status, err := client.GetEnvironment(envID)
-			if err != nil {
-				return fmt.Errorf("select failed: %w", err)
-			}
-			if status.EnvID != "" && status.EnvID != envID {
-				return fmt.Errorf("select returned environment %q, expected %q", status.EnvID, envID)
-			}
-
-			switch status.State {
-			case "running":
-				if status.Endpoint == "" {
-					return fmt.Errorf("environment %s is running without an endpoint", envID)
-				}
-				reauth, err := client.ReauthEnvironment(envID)
-				if err != nil {
-					return fmt.Errorf("select reauth failed: %w", err)
-				}
-				if reauth.EnvID != envID {
-					return fmt.Errorf("reauth returned environment %q, expected %q", reauth.EnvID, envID)
-				}
-				if reauth.Secret == "" {
-					return fmt.Errorf("reauth returned an empty one-time secret")
-				}
-				if err := auth.SaveEnvironment(envID, status.Endpoint, reauth.Secret); err != nil {
-					return fmt.Errorf("save environment: %w", err)
-				}
-				fmt.Printf("Using environment %s\n", envID)
-				fmt.Printf("  Endpoint: %s\n", status.Endpoint)
-				return nil
-
-			case "sleeping":
-				wake, err := client.WakeEnvironment(envID)
-				if err != nil {
-					return fmt.Errorf("select wake failed: %w", err)
-				}
-				if wake.EnvID != envID {
-					return fmt.Errorf("wake returned environment %q, expected %q", wake.EnvID, envID)
-				}
-				if wake.Secret == "" {
-					return fmt.Errorf("wake returned an empty one-time secret")
-				}
-				endpoint := wake.Endpoint
-				for i := 0; endpoint == "" && i < 30; i++ {
-					time.Sleep(time.Second)
-					current, err := client.GetEnvironment(envID)
-					if err == nil && current.State == "running" && current.Endpoint != "" {
-						endpoint = current.Endpoint
-					}
-				}
-				if endpoint == "" {
-					return fmt.Errorf("environment %s woke without an endpoint", envID)
-				}
-				if err := auth.SaveEnvironment(envID, endpoint, wake.Secret); err != nil {
-					return fmt.Errorf("save environment: %w", err)
-				}
-				fmt.Printf("Using environment %s\n", envID)
-				fmt.Printf("  Endpoint: %s\n", endpoint)
-				return nil
-
-			default:
-				return fmt.Errorf("cannot select environment %s from state %s", envID, status.State)
-			}
-		},
-	}
-}
-
-// newEnvAcquireCmd checks out a shared team environment (ADR-020): it leases the
-// env exclusively and saves the returned one-time secret + endpoint as the
-// active environment, so subsequent `agend exec`/file commands target it.
 func newEnvAcquireCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "acquire <env-id>",
 		Short: "Check out a shared team environment (exclusive until you release)",
-		Args:  cobra.ExactArgs(1),
+		Args:  environmentArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
 			if err != nil {
@@ -173,7 +89,7 @@ func newEnvAcquireCmd() *cobra.Command {
 				return fmt.Errorf("save environment: %w", err)
 			}
 			fmt.Printf("Acquired %s (lease until %s)\n", r.EnvID, r.LeaseExpiry)
-			fmt.Printf("Run commands with 'agend exec ...'. Release when done:  agend env release %s\n", r.EnvID)
+			fmt.Printf("Run commands with 'agend exec --env %s ...'. Release when done:  agend env release %s\n", r.EnvID, r.EnvID)
 			return nil
 		},
 	}
@@ -183,7 +99,7 @@ func newEnvReleaseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "release <env-id>",
 		Short: "Release your lease on a shared team environment",
-		Args:  cobra.ExactArgs(1),
+		Args:  environmentArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
 			if err != nil {
@@ -202,7 +118,7 @@ func newEnvHeartbeatCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "heartbeat <env-id>",
 		Short: "Extend your lease on a shared team environment",
-		Args:  cobra.ExactArgs(1),
+		Args:  environmentArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
 			if err != nil {
@@ -313,12 +229,12 @@ func newEnvCreateCmd() *cobra.Command {
 
 			if endpoint == "" {
 				fmt.Printf("Environment %s created but tunnel not ready yet.\n", resp.EnvID)
-				fmt.Println("Run 'agend env status' to check when it's ready.")
+				fmt.Printf("Run 'agend env status %s' to check when it's ready.\n", resp.EnvID)
 				return nil
 			}
 
 			// Update stored endpoint with the real tunnel URL
-			if err := auth.SaveEnvironment(resp.EnvID, endpoint, resp.Secret); err != nil {
+			if _, err := auth.SaveEndpointForEnvironment(resp.EnvID, endpoint); err != nil {
 				return fmt.Errorf("save environment: %w", err)
 			}
 
@@ -332,7 +248,7 @@ func newEnvCreateCmd() *cobra.Command {
 			if !reachable {
 				fmt.Printf("Environment %s created — the tunnel is still warming up.\n", resp.EnvID)
 				fmt.Printf("  Endpoint: %s\n", endpoint)
-				fmt.Println("Give it a few more seconds, then run 'agend exec' or 'agend ping'.")
+				fmt.Printf("Give it a few more seconds, then run 'agend ping --env %s'.\n", resp.EnvID)
 				return nil
 			}
 
@@ -363,9 +279,9 @@ func newEnvEditCmd() *cobra.Command {
 	var clearName bool
 	var clearDescription bool
 	command := &cobra.Command{
-		Use:   "edit [env-id]",
+		Use:   "edit <env-id>",
 		Short: "Edit an environment name or description",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  environmentArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nameChanged := cmd.Flags().Changed("name")
 			descriptionChanged := cmd.Flags().Changed("description")
@@ -379,10 +295,7 @@ func newEnvEditCmd() *cobra.Command {
 				return fmt.Errorf("provide --name, --description, --clear-name, or --clear-description")
 			}
 
-			envID, err := resolveEnvID(args)
-			if err != nil {
-				return err
-			}
+			envID := args[0]
 			client, err := apiClient()
 			if err != nil {
 				return err
@@ -456,22 +369,10 @@ func newProfilesCmd() *cobra.Command {
 	return cmd
 }
 
-// resolveEnvID returns the environment to act on: the first positional arg, or
-// the stored current environment when none is given.
-func resolveEnvID(args []string) (string, error) {
-	if len(args) > 0 {
-		return args[0], nil
-	}
-	envID, _, _, _, err := auth.LoadEnvironment()
-	if err != nil || envID == "" {
-		return "", fmt.Errorf("no environment — run 'agend env create' first")
-	}
-	return envID, nil
-}
-
 func newEnvStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status [env-id]",
+		Use:   "status <env-id>",
+		Args:  environmentArg,
 		Short: "Show environment status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
@@ -479,10 +380,7 @@ func newEnvStatusCmd() *cobra.Command {
 				return err
 			}
 
-			envID, err := resolveEnvID(args)
-			if err != nil {
-				return err
-			}
+			envID := args[0]
 
 			resp, err := client.GetEnvironment(envID)
 			if err != nil {
@@ -509,15 +407,6 @@ func newEnvStatusCmd() *cobra.Command {
 			fmt.Printf("Created:     %s\n", resp.CreatedAt)
 			fmt.Printf("Last active: %s\n", resp.LastActive)
 
-			// Update stored endpoint if it changed
-			if resp.Endpoint != "" && resp.State == "running" {
-				storedID, storedEndpoint, _, _, _ := auth.LoadEnvironment()
-				if storedID == resp.EnvID && storedEndpoint != resp.Endpoint {
-					if _, err := auth.SaveEndpointForEnvironment(resp.EnvID, resp.Endpoint); err != nil {
-						return fmt.Errorf("save refreshed endpoint: %w", err)
-					}
-				}
-			}
 			return nil
 		},
 	}
@@ -525,7 +414,8 @@ func newEnvStatusCmd() *cobra.Command {
 
 func newEnvDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete [env-id]",
+		Use:   "delete <env-id>",
+		Args:  environmentArg,
 		Short: "Permanently delete an environment and release all resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
@@ -533,10 +423,7 @@ func newEnvDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			envID, err := resolveEnvID(args)
-			if err != nil {
-				return err
-			}
+			envID := args[0]
 
 			fmt.Printf("Deleting environment %s...\n", envID)
 			ctx, cancel := context.WithTimeout(cmd.Context(), api.DeleteTimeout)
@@ -558,7 +445,8 @@ func newEnvDeleteCmd() *cobra.Command {
 
 func newEnvWakeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "wake [env-id]",
+		Use:   "wake <env-id>",
+		Args:  environmentArg,
 		Short: "Wake a sleeping environment",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
@@ -566,10 +454,7 @@ func newEnvWakeCmd() *cobra.Command {
 				return err
 			}
 
-			envID, err := resolveEnvID(args)
-			if err != nil {
-				return err
-			}
+			envID := args[0]
 
 			fmt.Println("Waking environment...")
 
@@ -602,11 +487,13 @@ func newEnvWakeCmd() *cobra.Command {
 			}
 
 			if endpoint != "" {
-				auth.SaveEnvironment(resp.EnvID, endpoint, resp.Secret)
+				if _, err := auth.SaveEndpointForEnvironment(resp.EnvID, endpoint); err != nil {
+					return err
+				}
 				fmt.Printf("Environment awake!\n")
 				fmt.Printf("  Endpoint: %s\n", endpoint)
 			} else {
-				fmt.Printf("Environment waking — run 'agend env status' to check.\n")
+				fmt.Printf("Environment waking — run 'agend env status %s' to check.\n", envID)
 			}
 			return nil
 		},
@@ -616,18 +503,15 @@ func newEnvWakeCmd() *cobra.Command {
 func newEnvColdResetCmd() *cobra.Command {
 	var reason string
 	cmd := &cobra.Command{
-		Use:   "cold-reset [env-id]",
+		Use:   "cold-reset <env-id>",
 		Short: "Cold-reset a stuck environment while preserving its data disk",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  environmentArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := apiClient()
 			if err != nil {
 				return err
 			}
-			envID, err := resolveEnvID(args)
-			if err != nil {
-				return err
-			}
+			envID := args[0]
 
 			fmt.Println("Cold-resetting environment (persistent disk will be preserved)...")
 			ctx, cancel := context.WithTimeout(cmd.Context(), api.ColdResetTimeout)

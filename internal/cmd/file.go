@@ -11,7 +11,6 @@ import (
 )
 
 func newFileGetCmd() *cobra.Command {
-	var addr string
 	var encoding string
 
 	cmd := &cobra.Command{
@@ -21,7 +20,7 @@ func newFileGetCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var resp *pb.FileGetResponse
-			err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, true, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.FileGet(ctx, &pb.FileGetRequest{
 					Path:     args[0],
 					Encoding: encoding,
@@ -41,14 +40,13 @@ func newFileGetCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	cmd.Flags().StringVar(&encoding, "encoding", "text", "encoding: text or base64")
 
 	return cmd
 }
 
 func newFilePutCmd() *cobra.Command {
-	var addr string
 	var encoding string
 	var mode string
 	var createDirs bool
@@ -61,7 +59,7 @@ func newFilePutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var resp *pb.FilePutResponse
-			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.FilePut(ctx, &pb.FilePutRequest{
 					Path:       args[0],
 					Content:    args[1],
@@ -84,7 +82,7 @@ func newFilePutCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	cmd.Flags().StringVar(&encoding, "encoding", "text", "encoding: text or base64")
 	cmd.Flags().StringVar(&mode, "mode", "0644", "file permissions")
 	cmd.Flags().BoolVar(&createDirs, "create-dirs", false, "create parent directories")
@@ -94,15 +92,13 @@ func newFilePutCmd() *cobra.Command {
 }
 
 func newFileMoveCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "file-move <source> <destination>",
 		Short: "Move or rename a file in the remote environment",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				if _, err := client.Agent.FileMove(ctx, &pb.FileMoveRequest{
 					Source:      args[0],
 					Destination: args[1],
@@ -115,7 +111,7 @@ func newFileMoveCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }

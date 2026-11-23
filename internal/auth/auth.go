@@ -18,19 +18,47 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rogpeppe/go-internal/lockedfile"
 )
 
-// account holds one logged-in account's credentials and its active
-// environment. Each account is independent, so operating on one never
-// disturbs another.
-type account struct {
-	Email               string `json:"email,omitempty"`
-	Token               string `json:"token"`
-	EnvID               string `json:"env_id,omitempty"`
+type environmentCredentials struct {
 	Endpoint            string `json:"endpoint,omitempty"`
 	Secret              string `json:"secret,omitempty"`
 	SessionToken        string `json:"session_token,omitempty"`
-	ControlPlaneVersion string `json:"control_plane_version,omitempty"`
+	ControlPlaneVersion string `json:"control_plane_version"`
+}
+
+type account struct {
+	Email        string                             `json:"email,omitempty"`
+	Token        string                             `json:"token"`
+	Environments map[string]*environmentCredentials `json:"environments,omitempty"`
+}
+
+// Import the v2 credential from older schema-3 accounts under its explicit ID.
+// The legacy selector is never exposed and disappears on the next write.
+func (a *account) UnmarshalJSON(data []byte) error {
+	type fields account
+	legacy := struct {
+		*fields
+		EnvID string `json:"env_id"`
+		environmentCredentials
+	}{fields: (*fields)(a)}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if a.Environments == nil {
+		a.Environments = make(map[string]*environmentCredentials)
+	}
+	if legacy.EnvID != "" && legacy.ControlPlaneVersion == v2ControlPlaneVersion && a.Environments[legacy.EnvID] == nil {
+		a.Environments[legacy.EnvID] = &legacy.environmentCredentials
+	}
+	for id, creds := range a.Environments {
+		if id == "" || creds == nil || creds.ControlPlaneVersion != v2ControlPlaneVersion {
+			delete(a.Environments, id)
+		}
+	}
+	return nil
 }
 
 // store is the on-disk credentials file: multiple accounts keyed by email
@@ -49,11 +77,17 @@ const (
 	v2ControlPlaneVersion = "v2"
 )
 
-// storeMu serializes credential read-modify-write operations within a CLI/MCP
-// process. The file replacement itself is atomic, but without this lock two
-// concurrent environment handshakes can both read the same old store and let
-// the later rename silently discard the earlier update.
-var storeMu sync.Mutex
+// Hold the sidecar lock across the entire read-modify-rename transaction.
+func lockStore() (func(), error) {
+	path, err := configPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	return lockedfile.MutexAt(path + ".lock").Lock()
+}
 
 func configPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -70,34 +104,6 @@ func accountKey(token string) string {
 		return email
 	}
 	return "default"
-}
-
-// clearEnvironmentAuthority removes every field that can select or authenticate
-// an environment. It deliberately includes EnvID: callers must not accidentally
-// recover an old environment by resolving a fresh endpoint for that ID.
-func clearEnvironmentAuthority(a *account) {
-	if a == nil {
-		return
-	}
-	a.EnvID = ""
-	a.Endpoint = ""
-	a.Secret = ""
-	a.SessionToken = ""
-	a.ControlPlaneVersion = ""
-}
-
-func hasV2Environment(a *account) bool {
-	return a != nil && a.ControlPlaneVersion == v2ControlPlaneVersion
-}
-
-// sanitizeEnvironmentAuthority enforces the generation boundary at the store
-// edge. Only an exact current-generation marker carries environment authority.
-func sanitizeEnvironmentAuthority(s *store) {
-	for _, a := range s.Accounts {
-		if !hasV2Environment(a) {
-			clearEnvironmentAuthority(a)
-		}
-	}
 }
 
 // loadStore reads the credentials file. Retired schemas are rejected instead
@@ -123,7 +129,6 @@ func loadStore() (*store, error) {
 	if s.Version != storeVersion || s.Accounts == nil {
 		return nil, fmt.Errorf("unsupported credentials schema: log in again")
 	}
-	sanitizeEnvironmentAuthority(&s)
 	return &s, nil
 }
 
@@ -174,23 +179,6 @@ func activeAccount(s *store) *account {
 	return s.Accounts[s.Active]
 }
 
-// mutateActive applies fn to the active account and persists. No-op if there
-// is no active account.
-func mutateActive(fn func(*account)) error {
-	storeMu.Lock()
-	defer storeMu.Unlock()
-	s, err := loadStore()
-	if err != nil {
-		return err
-	}
-	a := activeAccount(s)
-	if a == nil {
-		return nil
-	}
-	fn(a)
-	return saveStore(s)
-}
-
 // SaveToken records a freshly-obtained token under its account (keyed by the
 // JWT email claim) and makes that account active — without discarding any
 // other account or this account's own existing environment. This is what makes
@@ -200,8 +188,11 @@ func SaveToken(token string) error {
 	if token == "" {
 		return errors.New("empty token")
 	}
-	storeMu.Lock()
-	defer storeMu.Unlock()
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s, err := loadStore()
 	if err != nil {
 		s = &store{Version: storeVersion, Accounts: map[string]*account{}}
@@ -236,8 +227,11 @@ func LoadToken() (string, error) {
 // RemoveToken logs out the active account: it is removed and, if other accounts
 // remain, one becomes active. The file is deleted only when no accounts remain.
 func RemoveToken() error {
-	storeMu.Lock()
-	defer storeMu.Unlock()
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s, err := loadStore()
 	if err != nil {
 		return nil
@@ -314,155 +308,126 @@ func TokenEmail(token string) (string, bool) {
 	return claims.Email, true
 }
 
-// SaveEnvironment stores a v2 environment for the active account. The CLI's
-// lifecycle API is hard-routed to /v2, so this write is the sole point where
-// environment authority gains an explicit v2 generation marker. A non-empty
-// one-time secret invalidates any session token issued for the previous secret.
-// Empty-secret updates (for example, endpoint refreshes) preserve the session.
-func SaveEnvironment(envID, endpoint, secret string) error {
-	return mutateActive(func(a *account) {
-		a.EnvID = envID
-		a.Endpoint = endpoint
-		a.Secret = secret
-		a.ControlPlaneVersion = v2ControlPlaneVersion
-		if secret != "" {
-			a.SessionToken = ""
-		}
-	})
-}
-
-// SaveEndpointForEnvironment atomically refreshes only the endpoint of the
-// expected active environment. It preserves both the one-time secret and an
-// already-issued session token, and refuses to overwrite a newer environment
-// selected while the control-plane lookup was in flight.
-func SaveEndpointForEnvironment(envID, endpoint string) (bool, error) {
-	if envID == "" {
+// updateEnvironment holds the store lock while updating a single account/env record.
+// A nil result removes the record. changed=false leaves the store untouched.
+func updateEnvironment(id string, update func(*environmentCredentials) (*environmentCredentials, bool)) (bool, error) {
+	if id == "" {
 		return false, errors.New("empty environment ID")
 	}
-	if endpoint == "" {
-		return false, errors.New("empty environment endpoint")
+	unlock, err := lockStore()
+	if err != nil {
+		return false, err
 	}
-
-	storeMu.Lock()
-	defer storeMu.Unlock()
-
+	defer unlock()
 	s, err := loadStore()
 	if err != nil {
 		return false, err
 	}
 	a := activeAccount(s)
-	if !hasV2Environment(a) || a.EnvID != envID {
+	if a == nil {
 		return false, nil
 	}
-	a.Endpoint = endpoint
+	next, changed := update(a.Environments[id])
+	if !changed {
+		return false, nil
+	}
+	if next == nil {
+		delete(a.Environments, id)
+	} else {
+		a.Environments[id] = next
+	}
 	if err := saveStore(s); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// LoadEnvironment returns the active account's environment ID, endpoint, VM
-// secret, and session token.
-func LoadEnvironment() (envID, endpoint, secret, sessionToken string, err error) {
+func SaveEnvironment(id, endpoint, secret string) error {
+	_, err := updateEnvironment(id, func(c *environmentCredentials) (*environmentCredentials, bool) {
+		if c == nil {
+			c = &environmentCredentials{ControlPlaneVersion: v2ControlPlaneVersion}
+		}
+		c.Endpoint = endpoint
+		if secret != "" {
+			c.Secret, c.SessionToken = secret, ""
+		}
+		return c, true
+	})
+	return err
+}
+
+func SaveEndpointForEnvironment(id, endpoint string) (bool, error) {
+	if endpoint == "" {
+		return false, errors.New("empty environment endpoint")
+	}
+	return updateEnvironment(id, func(c *environmentCredentials) (*environmentCredentials, bool) {
+		if c == nil {
+			return nil, false
+		}
+		c.Endpoint = endpoint
+		return c, true
+	})
+}
+
+func LoadEnvironment(id string) (envID, endpoint, secret, session string, err error) {
 	s, err := loadStore()
 	if err != nil {
 		return "", "", "", "", err
 	}
-	a := activeAccount(s)
-	if !hasV2Environment(a) {
-		return "", "", "", "", nil
-	}
-	return a.EnvID, a.Endpoint, a.Secret, a.SessionToken, nil
-}
-
-// SaveSessionToken persists the gRPC session token for reuse across CLI invocations.
-// Clears the one-time secret since it was consumed to obtain this token.
-func SaveSessionToken(token string) error {
-	return mutateActive(func(a *account) {
-		if !hasV2Environment(a) {
-			return
+	if a := activeAccount(s); a != nil {
+		if c := a.Environments[id]; c != nil {
+			return id, c.Endpoint, c.Secret, c.SessionToken, nil
 		}
-		a.SessionToken = token
-		a.Secret = "" // consumed — never valid again
-	})
+	}
+	return "", "", "", "", nil
 }
 
-// SaveSessionTokenForEnvironment atomically replaces the credential that a
-// client actually used, and only when envID is still the active record. MCP can
-// hold multiple environments and credentials can rotate while calls overlap;
-// a late handshake must not overwrite either environment's newer credential.
-// The bool reports whether the compare-and-swap matched and was saved.
-func SaveSessionTokenForEnvironment(envID, expectedSecret, expectedSessionToken, token string) (bool, error) {
-	if envID == "" {
-		return false, errors.New("empty environment ID")
+// EnvironmentAuth prefers an existing session or one-time secret. On first
+// contact, cache the secret from status so the handshake can exchange it for
+// a durable session. Another process may have completed that exchange already.
+func EnvironmentAuth(id, endpoint, statusSecret string) (secret, session string, err error) {
+	_, _, secret, session, err = LoadEnvironment(id)
+	if err != nil || secret != "" || session != "" || statusSecret == "" {
+		return secret, session, err
 	}
+	secret = statusSecret
+	_, err = updateEnvironment(id, func(c *environmentCredentials) (*environmentCredentials, bool) {
+		if c != nil && (c.Secret != "" || c.SessionToken != "") {
+			secret, session = c.Secret, c.SessionToken
+			return c, false
+		}
+		return &environmentCredentials{ControlPlaneVersion: v2ControlPlaneVersion, Endpoint: endpoint, Secret: statusSecret}, true
+	})
+	return secret, session, err
+}
+
+func SaveSessionTokenForEnvironment(id, expectedSecret, expectedSession, token string) (bool, error) {
 	if token == "" {
 		return false, errors.New("empty session token")
 	}
-	storeMu.Lock()
-	defer storeMu.Unlock()
-
-	s, err := loadStore()
-	if err != nil {
-		return false, err
-	}
-	a := activeAccount(s)
-	if !hasV2Environment(a) || a.EnvID != envID || a.Secret != expectedSecret || a.SessionToken != expectedSessionToken {
-		return false, nil
-	}
-	a.SessionToken = token
-	a.Secret = ""
-	if err := saveStore(s); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// ClearSessionToken drops a stored gRPC session token without touching
-// the rest of the environment record. Used by the retry path when reauth
-// rotates the one-time secret — the old session token is no longer valid.
-func ClearSessionToken() error {
-	return mutateActive(func(a *account) { a.SessionToken = "" })
-}
-
-// ClearEnvironment removes the active account's environment info.
-func ClearEnvironment() error {
-	return mutateActive(func(a *account) {
-		clearEnvironmentAuthority(a)
+	return updateEnvironment(id, func(c *environmentCredentials) (*environmentCredentials, bool) {
+		if c == nil || c.Secret != expectedSecret || c.SessionToken != expectedSession {
+			return nil, false
+		}
+		c.Secret, c.SessionToken = "", token
+		return c, true
 	})
 }
 
-// ClearEnvironmentForEnvironment clears authority only when envID is still the
-// active environment. An explicit delete may target a different environment;
-// it must not erase a selection made before or during that request.
-func ClearEnvironmentForEnvironment(envID string) (bool, error) {
-	if envID == "" {
-		return false, errors.New("empty environment ID")
-	}
-
-	storeMu.Lock()
-	defer storeMu.Unlock()
-
-	s, err := loadStore()
-	if err != nil {
-		return false, err
-	}
-	a := activeAccount(s)
-	if !hasV2Environment(a) || a.EnvID != envID {
-		return false, nil
-	}
-	clearEnvironmentAuthority(a)
-	if err := saveStore(s); err != nil {
-		return false, err
-	}
-	return true, nil
+func ClearEnvironmentForEnvironment(id string) (bool, error) {
+	return updateEnvironment(id, func(c *environmentCredentials) (*environmentCredentials, bool) {
+		return nil, c != nil
+	})
 }
 
 // SaveAPIURL stores a custom API base URL (for dev/testing). It is global
 // (not per-account).
 func SaveAPIURL(url string) error {
-	storeMu.Lock()
-	defer storeMu.Unlock()
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s, err := loadStore()
 	if err != nil {
 		s = &store{Version: storeVersion, Accounts: map[string]*account{}}

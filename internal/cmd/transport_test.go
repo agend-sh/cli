@@ -107,7 +107,9 @@ func (s *interruptReplayTestServer) Interrupt(context.Context, *pb.InterruptRequ
 }
 
 func TestInterruptDoesNotReplayAfterAmbiguousTransportFailure(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	agent := &interruptReplayTestServer{}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -142,11 +144,15 @@ func TestInterruptDoesNotReplayAfterAmbiguousTransportFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := auth.SaveSessionTokenForEnvironment("env-interrupt", "", "", "session"); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := newInterruptCmd()
 	cmd.SetContext(ctx)
-	err = cmd.RunE(cmd, nil)
+	cmd.SetArgs([]string{"--env", "env-interrupt"})
+	err = cmd.Execute()
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("interrupt error = %v, want Unavailable", err)
 	}

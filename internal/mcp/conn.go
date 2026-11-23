@@ -567,31 +567,18 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 	credentialsMissing := c.secret == "" && c.sessionToken == ""
 	c.mu.Unlock()
 	if credentialsMissing {
-		if storedEnvID, _, storedSecret, storedToken, err := auth.LoadEnvironment(); err == nil && storedEnvID == envID {
-			c.mu.Lock()
-			if storedToken != "" {
-				if c.secret == "" && c.sessionToken == "" {
-					c.sessionToken = storedToken
-					log.Printf("[env:%s] loaded session token from disk", envID)
-				}
-			} else if storedSecret != "" {
-				if c.secret == "" && c.sessionToken == "" {
-					c.secret = storedSecret
-					log.Printf("[env:%s] loaded secret from disk", envID)
-				}
-			}
-			c.mu.Unlock()
+		secret, token, err := auth.EnvironmentAuth(envID, env.Endpoint, env.Secret)
+		if err != nil {
+			return disconnect(fmt.Errorf("load environment credentials: %w", err))
 		}
+		c.mu.Lock()
+		if c.secret == "" && c.sessionToken == "" {
+			c.secret, c.sessionToken = secret, token
+		}
+		c.mu.Unlock()
 	}
 
-	// Last resort: pick up secret from API response (may be stale if already consumed)
 	c.mu.Lock()
-	if c.secret == "" && c.sessionToken == "" && env.Secret != "" {
-		c.secret = env.Secret
-		c.authGeneration++
-		log.Printf("[env:%s] using secret from API (last resort)", envID)
-	}
-
 	secret, sessionToken := c.secret, c.sessionToken
 	log.Printf("[env:%s] auth state: secret=%v sessionToken=%v", envID, secret != "", sessionToken != "")
 
@@ -639,7 +626,7 @@ func (c *EnvConn) resolveAndConnect(ctx context.Context) error {
 		if err != nil {
 			log.Printf("[env:%s] persist session token: %v", envID, err)
 		} else if !saved {
-			log.Printf("[env:%s] active credential record changed; session token not persisted", envID)
+			log.Printf("[env:%s] credential record changed; session token not persisted", envID)
 		}
 	}
 

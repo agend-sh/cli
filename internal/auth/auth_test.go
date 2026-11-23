@@ -74,7 +74,7 @@ func TestSaveAndLoadEnvironment(t *testing.T) {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
 
-	envID, endpoint, secret, sessionToken, err := LoadEnvironment()
+	envID, endpoint, secret, sessionToken, err := LoadEnvironment("env-1")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSaveAndLoadEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := activeAccount(&s)
-	if s.Version != storeVersion || a == nil || a.ControlPlaneVersion != v2ControlPlaneVersion {
+	if s.Version != storeVersion || a == nil || a.Environments["env-1"].ControlPlaneVersion != v2ControlPlaneVersion {
 		t.Fatalf("saved environment lacks v2 generation marker: version=%d account=%+v", s.Version, a)
 	}
 }
@@ -113,7 +113,7 @@ func TestClearEnvironmentPreservesToken(t *testing.T) {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
 
-	if err := ClearEnvironment(); err != nil {
+	if _, err := ClearEnvironmentForEnvironment("env-2"); err != nil {
 		t.Fatalf("ClearEnvironment: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestClearEnvironmentPreservesToken(t *testing.T) {
 		t.Errorf("token = %q, want %q", tok, "tok_keep")
 	}
 
-	envID, endpoint, secret, sessionToken, err := LoadEnvironment()
+	envID, endpoint, secret, sessionToken, err := LoadEnvironment("env-2")
 	if err != nil {
 		t.Fatalf("LoadEnvironment after clear: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestClearEnvironmentPreservesToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a := activeAccount(s); a == nil || a.ControlPlaneVersion != "" {
+	if a := activeAccount(s); a == nil || len(a.Environments) != 0 {
 		t.Fatalf("ClearEnvironment retained generation marker: %+v", a)
 	}
 }
@@ -144,7 +144,7 @@ func TestClearEnvironmentPreservesToken(t *testing.T) {
 func TestClearEnvironmentNoConfig(t *testing.T) {
 	setupHome(t)
 
-	if err := ClearEnvironment(); err != nil {
+	if _, err := ClearEnvironmentForEnvironment("env-missing"); err != nil {
 		t.Fatalf("ClearEnvironment on missing config should not error: %v", err)
 	}
 }
@@ -158,11 +158,11 @@ func TestSaveSessionTokenAppearsInLoadEnvironment(t *testing.T) {
 	if err := SaveEnvironment("env-3", "ep3", "sec3"); err != nil {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
-	if err := SaveSessionToken("sess_xyz"); err != nil {
+	if _, err := SaveSessionTokenForEnvironment("env-3", "sec3", "", "sess_xyz"); err != nil {
 		t.Fatalf("SaveSessionToken: %v", err)
 	}
 
-	_, _, _, sessionToken, err := LoadEnvironment()
+	_, _, _, sessionToken, err := LoadEnvironment("env-3")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSaveEnvironmentFreshSecretClearsSessionToken(t *testing.T) {
 	if err := SaveEnvironment("env-rotate", "old:443", "old-secret"); err != nil {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
-	if err := SaveSessionToken("old-session"); err != nil {
+	if _, err := SaveSessionTokenForEnvironment("env-rotate", "old-secret", "", "old-session"); err != nil {
 		t.Fatalf("SaveSessionToken: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestSaveEnvironmentFreshSecretClearsSessionToken(t *testing.T) {
 	if err := SaveEnvironment("env-rotate", "new:443", "new-secret"); err != nil {
 		t.Fatalf("SaveEnvironment after rotation: %v", err)
 	}
-	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	_, endpoint, secret, sessionToken, err := LoadEnvironment("env-rotate")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestSaveEnvironmentEmptySecretPreservesSessionToken(t *testing.T) {
 	if err := SaveEnvironment("env-refresh", "old:443", "secret"); err != nil {
 		t.Fatalf("SaveEnvironment: %v", err)
 	}
-	if err := SaveSessionToken("active-session"); err != nil {
+	if _, err := SaveSessionTokenForEnvironment("env-refresh", "secret", "", "active-session"); err != nil {
 		t.Fatalf("SaveSessionToken: %v", err)
 	}
 
@@ -215,7 +215,7 @@ func TestSaveEnvironmentEmptySecretPreservesSessionToken(t *testing.T) {
 	if err := SaveEnvironment("env-refresh", "new:443", ""); err != nil {
 		t.Fatalf("SaveEnvironment after endpoint refresh: %v", err)
 	}
-	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	_, endpoint, secret, sessionToken, err := LoadEnvironment("env-refresh")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestSaveEndpointForEnvironmentPreservesInitialSecretAndSession(t *testing.T
 	if !saved {
 		t.Fatal("SaveEndpointForEnvironment did not match the active environment")
 	}
-	_, endpoint, secret, sessionToken, err := LoadEnvironment()
+	_, endpoint, secret, sessionToken, err := LoadEnvironment("env-delayed")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -248,14 +248,14 @@ func TestSaveEndpointForEnvironmentPreservesInitialSecretAndSession(t *testing.T
 		t.Fatalf("delayed endpoint credentials = endpoint %q, secret %q, session %q", endpoint, secret, sessionToken)
 	}
 
-	if err := SaveSessionToken("active-session"); err != nil {
+	if _, err := SaveSessionTokenForEnvironment("env-delayed", "one-time-secret", "", "active-session"); err != nil {
 		t.Fatalf("SaveSessionToken: %v", err)
 	}
 	saved, err = SaveEndpointForEnvironment("env-delayed", "rotated:443")
 	if err != nil || !saved {
 		t.Fatalf("session endpoint refresh = saved %t, err %v", saved, err)
 	}
-	_, endpoint, secret, sessionToken, err = LoadEnvironment()
+	_, endpoint, secret, sessionToken, err = LoadEnvironment("env-delayed")
 	if err != nil {
 		t.Fatalf("LoadEnvironment after session refresh: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestSaveEndpointForEnvironmentDoesNotClobberAnotherEnvironment(t *testing.T
 	if saved {
 		t.Fatal("stale endpoint unexpectedly overwrote the active environment")
 	}
-	envID, endpoint, secret, _, err := LoadEnvironment()
+	envID, endpoint, secret, _, err := LoadEnvironment("env-new")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestClearEnvironmentForEnvironmentDoesNotClobberAnotherEnvironment(t *testi
 	if cleared {
 		t.Fatal("deleting another environment cleared the active environment")
 	}
-	envID, endpoint, secret, _, err := LoadEnvironment()
+	envID, endpoint, secret, _, err := LoadEnvironment("env-active")
 	if err != nil {
 		t.Fatalf("LoadEnvironment: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestClearEnvironmentForEnvironmentDoesNotClobberAnotherEnvironment(t *testi
 	if !cleared {
 		t.Fatal("matching active environment was not cleared")
 	}
-	envID, endpoint, secret, session, err := LoadEnvironment()
+	envID, endpoint, secret, session, err := LoadEnvironment("env-active")
 	if err != nil {
 		t.Fatalf("LoadEnvironment after clear: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testi
 	if saved {
 		t.Fatal("session token for a different environment was persisted")
 	}
-	envID, _, secret, session, err := LoadEnvironment()
+	envID, _, secret, session, err := LoadEnvironment("env-active")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testi
 	if !saved {
 		t.Fatal("matching environment session token was not persisted")
 	}
-	_, _, secret, session, err = LoadEnvironment()
+	_, _, secret, session, err = LoadEnvironment("env-active")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestSaveSessionTokenForEnvironmentDoesNotClobberAnotherEnvironment(t *testi
 	if saved {
 		t.Fatal("late session token replaced a newer one-time secret")
 	}
-	_, _, secret, session, err = LoadEnvironment()
+	_, _, secret, session, err = LoadEnvironment("env-active")
 	if err != nil {
 		t.Fatal(err)
 	}

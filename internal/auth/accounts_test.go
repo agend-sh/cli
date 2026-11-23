@@ -3,7 +3,9 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,7 +101,7 @@ func TestStoreRequiresExactSchemaAndV2EnvironmentMarker(t *testing.T) {
 				"accounts": map[string]any{"ambiguous@acme.test": account},
 			})
 
-			envID, endpoint, secret, session, err := LoadEnvironment()
+			envID, endpoint, secret, session, err := LoadEnvironment("env-ambiguous")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +142,7 @@ func TestLoginAddNotClobber_NoEnvInheritance(t *testing.T) {
 		t.Fatalf("active = %q, want b@acme.test", ActiveEmail())
 	}
 	// b is fresh — must NOT see a's environment.
-	if envID, _, _, _, _ := LoadEnvironment(); envID != "" {
+	if envID, _, _, _, _ := LoadEnvironment("env-a"); envID != "" {
 		t.Fatalf("new account inherited env %q (bug #3)", envID)
 	}
 
@@ -152,7 +154,7 @@ func TestLoginAddNotClobber_NoEnvInheritance(t *testing.T) {
 	if err := SwitchAccount("a@acme.test"); err != nil {
 		t.Fatal(err)
 	}
-	if envID, _, _, _, _ := LoadEnvironment(); envID != "env-a" {
+	if envID, _, _, _, _ := LoadEnvironment("env-a"); envID != "env-a" {
 		t.Fatalf("account a lost its env: %q", envID)
 	}
 }
@@ -177,5 +179,70 @@ func TestSwitchAndRemove(t *testing.T) {
 	}
 	if accts, _ := ListAccounts(); len(accts) != 0 {
 		t.Fatalf("RemoveAllAccounts left %d", len(accts))
+	}
+}
+
+func TestLegacySelectionMigratesToKeyedCredential(t *testing.T) {
+	home := isolateHome(t)
+	writeCredentials(t, home, map[string]any{
+		"version": 3, "active": "dev",
+		"accounts": map[string]any{"dev": map[string]any{
+			"token": "account-token", "env_id": "env-before", "session_token": "existing-session",
+			"control_plane_version": "v2",
+		}},
+	})
+	if err := SaveEnvironment("env-after", "localhost:1", "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, token, err := LoadEnvironment("env-before")
+	if err != nil || token != "existing-session" {
+		t.Fatalf("legacy session lost: %v", err)
+	}
+	path, err := configPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"env_id"`) {
+		t.Fatal("selector persisted after migration")
+	}
+}
+
+func TestConcurrentProcessEnvironmentWrites(t *testing.T) {
+	const childEnv = "AGEND_TEST_CREDENTIAL_WRITER"
+	if id := os.Getenv(childEnv); id != "" {
+		if err := SaveEnvironment(id, "", "secret"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	isolateHome(t)
+	if err := SaveToken("test-token"); err != nil {
+		t.Fatal(err)
+	}
+	var cmds []*exec.Cmd
+	for i := range 8 {
+		id := fmt.Sprintf("env-%d", i)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentProcessEnvironmentWrites$")
+		cmd.Env = append(os.Environ(), childEnv+"="+id)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds = append(cmds, cmd)
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range cmds {
+		id := fmt.Sprintf("env-%d", i)
+		_, _, secret, _, err := LoadEnvironment(id)
+		if err != nil || secret != "secret" {
+			t.Fatalf("lost record %s: %v", id, err)
+		}
 	}
 }

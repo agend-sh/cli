@@ -64,7 +64,7 @@ a desktop icon may need its own secret/environment configuration instead.
 Registry consumers can prompt for this secret using `server.json`.
 
 Ask the agent to use `list_environments`, then name the environment in tool
-calls. The container does not inherit the native CLI's selected environment.
+calls.
 You can create an environment with the native CLI or with `env_create` if
 your account has quota. Reauthenticate and refresh the supplied token when
 it expires.

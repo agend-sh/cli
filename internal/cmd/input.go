@@ -11,8 +11,6 @@ import (
 )
 
 func newInputCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "input <text>",
 		Short: "Send text input to a process waiting for input (newline appended)",
@@ -20,7 +18,7 @@ func newInputCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var resp *pb.InputResponse
-			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.Input(ctx, &pb.InputRequest{
 					Input: args[0],
 				})
@@ -52,14 +50,12 @@ func newInputCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }
 
 func newInterruptCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "interrupt",
 		Short: "Send SIGINT to the active session",
@@ -67,7 +63,7 @@ func newInterruptCmd() *cobra.Command {
 			ctx := cmd.Context()
 			// SIGINT is not idempotent: an ambiguous lost response may mean the
 			// signal was delivered, and replay could hit a subsequent session.
-			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Interrupt(ctx, &pb.InterruptRequest{})
 				if err != nil {
 					return fmt.Errorf("interrupt failed: %w", err)
@@ -78,7 +74,7 @@ func newInterruptCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }

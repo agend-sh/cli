@@ -40,11 +40,7 @@ func newAccountListCmd() *cobra.Command {
 				if a.Expired {
 					status = "  (session expired — run 'agend login')"
 				}
-				env := a.EnvID
-				if env == "" {
-					env = "(no environment)"
-				}
-				fmt.Printf("%s%-40s %s%s\n", marker, a.Email, env, status)
+				fmt.Printf("%s%-40s%s\n", marker, a.Email, status)
 			}
 			return nil
 		},

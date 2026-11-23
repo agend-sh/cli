@@ -30,32 +30,23 @@ func classifyErr(err error) errorCategory {
 	return recovery.Classify(err)
 }
 
-// callWithRetry runs fn against a freshly-dialed agentd client, with
-// automatic:
-//
-//   - reauth on expired session token / Unauthenticated errors
-//   - endpoint re-resolve on tunnel URL rotation (stale endpoint errors)
-//   - backoff retry on transient errors
-//
-// If --addr is explicitly set by the user, retries are suppressed (we
-// assume the user knows what they're pointing at).
-//
-// Fresh credentials obtained during recovery are persisted to disk so
-// subsequent CLI invocations start from a good state.
-// idempotent reports whether fn is safe to re-execute after it may already
-// have run on the daemon. Dial failures (fn never ran) are always retried
-// regardless; only the post-call error path consults this.
-func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempotent bool, fn func(*agentgrpc.Client) error) error {
-	// Direct-address mode: no retry, no creds persistence.
-	if cmd.Flags().Changed("addr") {
-		client, err := dialDaemon(ctx, cmd, addr)
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-		return fn(client)
+// Every retry uses the environment ID supplied to this command.
+func callWithRetry(ctx context.Context, cmd *cobra.Command, idempotent bool, fn func(*agentgrpc.Client) error) error {
+	id, err := cmd.Flags().GetString("env")
+	if err != nil {
+		return err
 	}
-
+	if err := validateEnvironmentID(id); err != nil {
+		return err
+	}
+	api, err := apiClient()
+	if err != nil {
+		return err
+	}
+	target := environmentTarget{id: id, api: api}
+	if err := target.resolve(ctx); err != nil {
+		return err
+	}
 	// Recovery (endpoint refresh / reauth) needs a valid control-plane token.
 	// If the stored JWT has already expired, those steps can only 401, so
 	// retrying just hangs for tens of seconds. Recognise it and fail fast with
@@ -75,7 +66,7 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 
 	var lastErr error
 	for attempt := 1; attempt <= maxTotal; attempt++ {
-		client, err := dialDaemon(ctx, cmd, addr)
+		client, err := target.dial(ctx)
 		if err != nil {
 			// A dial failure before any RPC is almost always a stale
 			// endpoint or a transient connection problem.
@@ -90,7 +81,7 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 			if staleBudget == 0 && transientBudget == 0 {
 				return err
 			}
-			if err := refreshEndpoint(ctx); err != nil {
+			if err := target.refresh(ctx); err != nil {
 				log.Printf("refresh endpoint failed: %v", err)
 			}
 			staleBudget--
@@ -114,11 +105,6 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 		// don't loop back and re-execute it. Auth is the exception (an
 		// Unauthenticated reply means it was rejected before running).
 		if cat != errFatal && !retrySafe {
-			// Refresh the endpoint so the *next* CLI invocation is healthy,
-			// then surface the original error.
-			if rerr := refreshEndpoint(ctx); rerr != nil {
-				log.Printf("refresh endpoint failed: %v", rerr)
-			}
 			return err
 		}
 
@@ -137,9 +123,9 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 				return err
 			}
 			authBudget--
-			if rerr := reauthEnvironment(ctx); rerr != nil {
+			if rerr := target.reauth(ctx); rerr != nil {
 				// Reauth failed — try a full re-resolve instead.
-				if frerr := refreshEndpoint(ctx); frerr != nil {
+				if frerr := target.refresh(ctx); frerr != nil {
 					return err
 				}
 			}
@@ -153,7 +139,7 @@ func callWithRetry(ctx context.Context, cmd *cobra.Command, addr string, idempot
 				return err
 			}
 			staleBudget--
-			if rerr := refreshEndpoint(ctx); rerr != nil {
+			if rerr := target.refresh(ctx); rerr != nil {
 				log.Printf("refresh endpoint failed: %v", rerr)
 			}
 			// Cloudflare quick-tunnel DNS propagation can take several
@@ -212,61 +198,4 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// refreshEndpoint fetches the current endpoint for the stored env from
-// the control plane and persists it. Preserves the existing secret
-// because endpoint rotation alone does not invalidate the gRPC session.
-func refreshEndpoint(ctx context.Context) error {
-	envID, _, _, _, err := auth.LoadEnvironment()
-	if err != nil || envID == "" {
-		return fmt.Errorf("no active environment in credentials")
-	}
-	api, err := apiClient()
-	if err != nil {
-		return err
-	}
-	env, err := api.GetEnvironmentContext(ctx, envID)
-	if err != nil {
-		return err
-	}
-	if env.Endpoint == "" {
-		return fmt.Errorf("env %s has no endpoint (state=%s)", envID, env.State)
-	}
-	saved, err := auth.SaveEndpointForEnvironment(envID, env.Endpoint)
-	if err != nil {
-		return err
-	}
-	if !saved {
-		return fmt.Errorf("active environment changed while refreshing endpoint")
-	}
-	return nil
-}
-
-// reauthEnvironment rotates the one-time secret via the control plane
-// and persists it. Also clears any cached session token, since the new
-// secret invalidates all previous sessions.
-func reauthEnvironment(ctx context.Context) error {
-	envID, endpoint, _, _, err := auth.LoadEnvironment()
-	if err != nil || envID == "" {
-		return fmt.Errorf("no active environment in credentials")
-	}
-	api, err := apiClient()
-	if err != nil {
-		return err
-	}
-	resp, err := api.ReauthEnvironmentContext(ctx, envID)
-	if err != nil {
-		return err
-	}
-	if resp.EnvID != envID {
-		return fmt.Errorf("reauth returned environment %q, expected %q", resp.EnvID, envID)
-	}
-	if resp.Secret == "" {
-		return fmt.Errorf("reauth returned an empty one-time secret")
-	}
-	if err := auth.SaveEnvironment(envID, endpoint, resp.Secret); err != nil {
-		return err
-	}
-	return auth.ClearSessionToken()
 }

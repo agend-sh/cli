@@ -4,6 +4,7 @@ go 1.26.10
 
 require (
 	github.com/acolita/go-add-mcp v0.3.2
+	github.com/rogpeppe/go-internal v1.14.1
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.46.0

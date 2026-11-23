@@ -11,8 +11,6 @@ import (
 )
 
 func newTaskOutputCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "task-output <task-id>",
 		Short: "Get output of a background task",
@@ -20,7 +18,7 @@ func newTaskOutputCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var resp *pb.TaskOutputResponse
-			err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, true, func(client *agentgrpc.Client) error {
 				r, err := client.Agent.TaskOutput(ctx, &pb.TaskOutputRequest{
 					TaskId: args[0],
 				})
@@ -48,14 +46,12 @@ func newTaskOutputCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }
 
 func newTaskStopCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "task-stop <task-id>",
 		Short: "Stop a running background task",
@@ -64,7 +60,7 @@ func newTaskStopCmd() *cobra.Command {
 			ctx := cmd.Context()
 			// Host-worker task stop is tombstone-idempotent: replay targets the
 			// same opaque task ID and a completed tombstone returns success.
-			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, true, func(client *agentgrpc.Client) error {
 				if _, err := client.Agent.TaskStop(ctx, &pb.TaskStopRequest{
 					TaskId: args[0],
 				}); err != nil {
@@ -76,7 +72,7 @@ func newTaskStopCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }

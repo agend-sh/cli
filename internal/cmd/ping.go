@@ -10,14 +10,12 @@ import (
 )
 
 func newPingCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "ping",
 		Short: "Ping the agentd daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			return callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, true, func(client *agentgrpc.Client) error {
 				resp, err := client.Agent.Ping(ctx, &pb.PingRequest{})
 				if err != nil {
 					return fmt.Errorf("ping failed: %w", err)
@@ -28,7 +26,7 @@ func newPingCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 
 	return cmd
 }

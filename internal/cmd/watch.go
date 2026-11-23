@@ -54,7 +54,6 @@ func (e watchFatalError) GRPCStatus() *status.Status {
 }
 
 func newWatchCmd() *cobra.Command {
-	var addr string
 	var typingDelay time.Duration
 
 	cmd := &cobra.Command{
@@ -78,16 +77,16 @@ character at a time, which reads better in a screen recording.`,
 			if typingDelay < 0 {
 				return fmt.Errorf("--typing-delay must not be negative")
 			}
-			return runWatch(cmd, addr, typingDelay)
+			return runWatch(cmd, typingDelay)
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	cmd.Flags().DurationVar(&typingDelay, "typing-delay", 0, "delay between characters of short updates, e.g. 40ms")
 	return cmd
 }
 
-func runWatch(cmd *cobra.Command, addr string, typingDelay time.Duration) error {
+func runWatch(cmd *cobra.Command, typingDelay time.Duration) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	watchCtx, quit := context.WithCancel(ctx)
@@ -114,7 +113,7 @@ func runWatch(cmd *cobra.Command, addr string, typingDelay time.Duration) error 
 	}
 
 	renderer.statusLine("waiting for an interactive session (q to quit)")
-	err := callWithRetry(watchCtx, cmd, addr, true, func(client *agentgrpc.Client) error {
+	err := callWithRetry(watchCtx, cmd, true, func(client *agentgrpc.Client) error {
 		return followWatchStream(watchCtx, client, renderer)
 	})
 	if watchCtx.Err() != nil {

@@ -15,7 +15,7 @@ import (
 // stripped.
 // sanitizeForTTY sanitizes s only when f is a terminal. Escape injection is
 // only dangerous on a TTY; piped/redirected output must stay byte-exact so
-// things like `agend exec cat file > out` aren't corrupted.
+// things like `agend exec --env env-id cat file > out` aren't corrupted.
 func sanitizeForTTY(s string, f *os.File) string {
 	if term.IsTerminal(int(f.Fd())) {
 		return sanitizeRemote(s)

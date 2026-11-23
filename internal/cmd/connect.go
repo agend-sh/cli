@@ -48,7 +48,6 @@ func (e connectExitError) Error() string {
 func (e connectExitError) ExitCode() int { return e.code }
 
 func newConnectCmd() *cobra.Command {
-	var addr string
 	var shell string
 
 	cmd := &cobra.Command{
@@ -59,13 +58,13 @@ func newConnectCmd() *cobra.Command {
 			ctx := cmd.Context()
 			progress := startConnectProgress(cmd.ErrOrStderr())
 			defer progress.Stop()
-			return callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			return callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				return runConnectSession(ctx, cmd, client, shell, progress)
 			})
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	cmd.Flags().StringVar(&shell, "shell", "bash", "remote shell command to launch")
 	return cmd
 }

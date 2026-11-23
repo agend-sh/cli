@@ -20,8 +20,6 @@ func parsePTYDimension(value, name string) (uint32, error) {
 }
 
 func newResizeCmd() *cobra.Command {
-	var addr string
-
 	cmd := &cobra.Command{
 		Use:   "resize <columns> <rows>",
 		Short: "Resize the active interactive session",
@@ -38,7 +36,7 @@ func newResizeCmd() *cobra.Command {
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 			defer cancel()
-			if err := callWithRetry(ctx, cmd, addr, true, func(client *agentgrpc.Client) error {
+			if err := callWithRetry(ctx, cmd, true, func(client *agentgrpc.Client) error {
 				return client.Resize(ctx, columns, rows)
 			}); err != nil {
 				return fmt.Errorf("resize failed: %w", err)
@@ -48,6 +46,6 @@ func newResizeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	return cmd
 }

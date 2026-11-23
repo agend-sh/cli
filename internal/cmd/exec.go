@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,7 +13,6 @@ import (
 )
 
 func newExecCmd() *cobra.Command {
-	var addr string
 	var timeoutMs uint32
 	var tailLines uint32
 	var headLines uint32
@@ -20,13 +20,13 @@ func newExecCmd() *cobra.Command {
 	var interactive bool
 
 	cmd := &cobra.Command{
-		Use:   "exec [command...]",
+		Use:   "exec <command...>",
 		Short: "Execute a command in the remote environment",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var resp *pb.ExecResponse
-			err := callWithRetry(ctx, cmd, addr, false, func(client *agentgrpc.Client) error {
+			err := callWithRetry(ctx, cmd, false, func(client *agentgrpc.Client) error {
 				if interactive && terminalResizeAvailable() {
 					stopResize := startTerminalResizeForwarding(ctx, client, cmd.ErrOrStderr())
 					defer stopResize()
@@ -84,7 +84,7 @@ func newExecCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "localhost:50051", "agentd address")
+	requireEnvironment(cmd)
 	cmd.Flags().Uint32Var(&timeoutMs, "timeout", 30000, "timeout in milliseconds")
 	cmd.Flags().Uint32Var(&tailLines, "tail", 0, "return only last N lines")
 	cmd.Flags().Uint32Var(&headLines, "head", 0, "return only first N lines")

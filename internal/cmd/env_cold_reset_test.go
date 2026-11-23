@@ -24,7 +24,7 @@ func TestEnvColdResetAcceptsAtMostOneEnvironment(t *testing.T) {
 	command.SilenceErrors = true
 
 	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "accepts at most 1 arg") {
+	if err == nil || !strings.Contains(err.Error(), "accepts 1 arg(s)") {
 		t.Fatalf("error = %v, want maximum-argument error", err)
 	}
 }

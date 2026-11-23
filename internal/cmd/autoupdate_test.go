@@ -32,10 +32,10 @@ func TestFirstSubcommand(t *testing.T) {
 		want string
 	}{
 		{[]string{"agend", "env", "list"}, "env"},
-		// Subcommand-local flags (e.g. --addr) come AFTER the subcommand; the
+		// Subcommand-local flags (e.g. --env) come AFTER the subcommand; the
 		// root has no value-taking persistent flags, so the first non-flag token
 		// is always the subcommand.
-		{[]string{"agend", "exec", "--addr", "x", "ls"}, "exec"},
+		{[]string{"agend", "exec", "--env", "env-x", "ls"}, "exec"},
 		{[]string{"agend", "mcp"}, "mcp"},
 		{[]string{"agend"}, ""},
 		{[]string{"agend", "--version"}, ""},
@@ -51,10 +51,10 @@ func TestAutoUpdateEnabled(t *testing.T) {
 	t.Setenv("AGEND_NO_AUTOUPDATE", "")
 	t.Setenv("AGEND_SELF_UPDATED", "")
 
-	if !autoUpdateEnabled("v1.1.3", []string{"agend", "exec", "ls"}) {
+	if !autoUpdateEnabled("v1.1.3", []string{"agend", "exec", "--env", "env-x", "ls"}) {
 		t.Error("expected enabled for a release build running a normal command")
 	}
-	if !autoUpdateEnabled("1.1.3", []string{"agend", "exec", "ls"}) {
+	if !autoUpdateEnabled("1.1.3", []string{"agend", "exec", "--env", "env-x", "ls"}) {
 		t.Error("expected enabled for a release build without v prefix")
 	}
 	// Gated off cases.

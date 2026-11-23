@@ -35,8 +35,7 @@ The bundle also accepts a token inherited through `AGEND_API_TOKEN`.
 
 After `agend login` or switching CLI accounts, restart the bundle. Refresh any
 configured override when its token expires. The bundle reads only the active
-account's token; it does not inherit the CLI's selected environment or mount
-your credential directory into Docker. It supports the current CLI credential
+account's token. Each environment-scoped tool call supplies its own target. It supports the current CLI credential
 format and the public `https://api.agend.sh` endpoint.
 
 ## Terminals and files

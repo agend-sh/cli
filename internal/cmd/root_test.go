@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 )
 
@@ -43,17 +42,12 @@ func startCountingGRPCServer(t *testing.T) (*countingListener, string) {
 	return listener, listener.Addr().String()
 }
 
-// The command boundary must ignore environment authority from the previous
-// credential schema. This exercises dialDaemon rather than only asserting the
-// auth package's decoded values: the safe caller address is connected, while
-// the stored retired-generation endpoint is never touched.
-func TestDialDaemonDoesNotReuseSchema2Endpoint(t *testing.T) {
+func TestPingDoesNotReuseSchema2Endpoint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
 	retiredListener, retiredAddr := startCountingGRPCServer(t)
-	safeListener, safeAddr := startCountingGRPCServer(t)
 
 	credentials := map[string]any{
 		"version": 2,
@@ -82,20 +76,14 @@ func TestDialDaemonDoesNotReuseSchema2Endpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{}
-	cmd.Flags().String("addr", safeAddr, "")
+	cmd := newPingCmd()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	client, err := dialDaemon(ctx, cmd, safeAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	if got := safeListener.accepts.Load(); got == 0 {
-		t.Fatal("dialDaemon did not connect to the caller-provided safe address")
+	cmd.SetArgs([]string{"--env", "env-old"})
+	if err := cmd.ExecuteContext(ctx); err == nil {
+		t.Fatal("ping accepted retired account credentials")
 	}
 	if got := retiredListener.accepts.Load(); got != 0 {
-		t.Fatalf("dialDaemon connected to schema2 endpoint %d time(s)", got)
+		t.Fatalf("ping connected to schema2 endpoint %d time(s)", got)
 	}
 }

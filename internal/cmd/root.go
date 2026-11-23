@@ -1,42 +1,6 @@
 package cmd
 
-import (
-	"context"
-
-	"github.com/spf13/cobra"
-
-	"github.com/agend-sh/cli/internal/auth"
-	agentgrpc "github.com/agend-sh/cli/internal/grpc"
-)
-
-// dialDaemon connects to agentd with auth. If addr is the default and a stored
-// environment exists, it uses the stored endpoint, secret, and session token.
-func dialDaemon(ctx context.Context, cmd *cobra.Command, addr string) (*agentgrpc.Client, error) {
-	envID := ""
-	secret := ""
-	sessionToken := ""
-	if !cmd.Flags().Changed("addr") {
-		storedEnvID, endpoint, s, st, err := auth.LoadEnvironment()
-		if err == nil && endpoint != "" {
-			addr = endpoint
-			envID = storedEnvID
-			secret = s
-			sessionToken = st
-		}
-	}
-	client, err := agentgrpc.Dial(ctx, addr, secret, sessionToken)
-	if err != nil {
-		return nil, err
-	}
-	// Persist only if this exact environment credential is still current. An
-	// overlapping credential change wins over a late callback from this client.
-	if envID != "" {
-		client.OnTokenReceived = func(token string) {
-			_, _ = auth.SaveSessionTokenForEnvironment(envID, secret, sessionToken, token)
-		}
-	}
-	return client, nil
-}
+import "github.com/spf13/cobra"
 
 func NewRoot(version string) *cobra.Command {
 	// Clean up stale .old binary from a previous update (Windows compat)

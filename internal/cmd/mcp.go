@@ -22,6 +22,7 @@ import (
 const leaseHeartbeatInterval = 2 * time.Minute
 
 func newMCPCmd(version string) *cobra.Command {
+	var leaseEnv string
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run as MCP server (stdio transport), bridging tool calls to agentd via gRPC",
@@ -51,17 +52,17 @@ func newMCPCmd(version string) *cobra.Command {
 				cancel()
 			}()
 
-			// Team-env auto-lease (ADR-020): if the active environment is a
-			// team env, acquire an exclusive lease for this session, keep it
-			// alive with a heartbeat, and release it on exit. Personal envs need
-			// no lease. An env held by another member aborts with a clear error.
-			if envID, _, _, _, lerr := auth.LoadEnvironment(); lerr == nil && envID != "" {
-				leased, aerr := acquireLease(ctx, apiClient, envID)
+			// Lease only a team environment explicitly requested by this MCP host.
+			if cmd.Flags().Changed("env") {
+				if err := validateEnvironmentID(leaseEnv); err != nil {
+					return err
+				}
+				leased, aerr := acquireLease(ctx, apiClient, leaseEnv)
 				if aerr != nil {
 					return aerr
 				}
 				if leased {
-					defer releaseLease(apiClient, envID)
+					defer releaseLease(apiClient, leaseEnv)
 				}
 			}
 
@@ -70,6 +71,7 @@ func newMCPCmd(version string) *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&leaseEnv, "env", "", "acquire and maintain a lease for this team environment")
 	return cmd
 }
 

@@ -30,7 +30,7 @@
 
 | Build | Interact | Show the work |
 | --- | --- | --- |
-| Run commands and background tasks. Transfer files. Keep projects in your remote workspace. | Drive REPLs and terminal apps through a PTY, with feedback when the terminal enters an input wait. | Open a browser preview or mirror the interactive session with `agend watch`. |
+| Run commands and background tasks. Transfer files. Keep projects in your remote workspace. | Drive REPLs and terminal apps through a PTY, with feedback when the terminal enters an input wait. | Open a browser preview or mirror the interactive session with `agend watch --env <env-id>`. |
 
 ## Quick start
 
@@ -78,11 +78,11 @@ agend signup --email you@example.com
 
 ```sh
 agend env create --name my-workspace
-agend ping
-agend exec 'python3 --version'
+agend ping --env <env-id>
+agend exec --env <env-id> 'python3 --version'
 ```
 
-Creation selects the new environment for CLI commands. Its size follows your account's default profile. Use `agend profiles` to see available sizes, quotas, and sleep policies; pass a returned profile ID with `agend env create --profile <profile-id>` to choose another size.
+Use the ID printed by `env create` in subsequent commands. Its size follows your account's default profile. Use `agend profiles` to see available sizes, quotas, and sleep policies; pass a returned profile ID with `agend env create --profile <profile-id>` to choose another size.
 
 ### 4. Connect your agent
 
@@ -169,15 +169,15 @@ An interactive process stays alive between tool calls and is not killed when its
 ## Watch your agent work
 
 ```sh
-agend watch
+agend watch --env <env-id>
 ```
 
-Watch mirrors the selected environment's interactive session, replays retained output, and follows new updates. It sends no input to the remote process. Press **q** or **Ctrl+C** to stop watching; the agent's session continues.
+Watch mirrors the specified environment's interactive session, replays retained output, and follows new updates. It sends no input to the remote process. Press **q** or **Ctrl+C** to stop watching; the agent's session continues.
 
 For a screen recording:
 
 ```sh
-agend watch --typing-delay 40ms
+agend watch --env <env-id> --typing-delay 40ms
 ```
 
 Match your terminal's size to the remote session for an accurate display. Watch follows output collected by the agent's tool calls; it does not poll the guest for output between those calls. It shows interactive sessions, not ordinary command output or background-task logs.
@@ -185,7 +185,7 @@ Match your terminal's size to the remote session for an accurate display. Watch 
 Want to work in the environment yourself?
 
 ```sh
-agend connect
+agend connect --env <env-id>
 ```
 
 This opens a live terminal with keyboard input and terminal resizing. Run `exit` to close the shell. It requires a terminal on stdin and uses the same single interactive-session slot as MCP, so close the agent's interactive app first.
@@ -302,12 +302,11 @@ Downloads return transfer metadata; read text with `shell_exec` or open the down
 
 ## CLI reference
 
-CLI commands operate on the selected environment. Use **environment IDs** with `agend env use` and other CLI environment commands; MCP tools also resolve names.
+Commands that act on an environment require its ID. Pass `--env <env-id>` to shell, file, and task commands. Lifecycle commands such as `agend env status <env-id>` take the ID as an argument. MCP tools also accept environment names.
 
 ```sh
 agend env list
-agend env use <env-id>
-agend exec 'pwd'
+agend exec --env <env-id> 'pwd'
 ```
 
 ### Environments and accounts
@@ -315,15 +314,14 @@ agend exec 'pwd'
 | Command | Purpose |
 | --- | --- |
 | `agend profiles` | List profiles available to your account. |
-| `agend env create [--name NAME] [--description TEXT] [--profile ID]` | Provision and select a workspace. |
+| `agend env create [--name NAME] [--description TEXT] [--profile ID]` | Provision a workspace and print its ID. |
 | `agend env list` | List environments. |
-| `agend env use <env-id>` | Select an environment; wakes it if sleeping. |
-| `agend env edit [env-id] --name NAME --description TEXT` | Edit metadata; `--clear-name` and `--clear-description` remove values. |
-| `agend env status [env-id]` | Inspect state without waking it. |
-| `agend env wake [env-id]` | Wake a sleeping environment. |
-| `agend env cold-reset [env-id] --reason TEXT` | Recover a genuinely stuck environment through a cold boot. |
-| `agend env delete [env-id]` | Permanently delete an environment and its data. |
-| `agend status` | Show authentication and selected-environment status. |
+| `agend env edit <env-id> --name NAME --description TEXT` | Edit metadata; `--clear-name` and `--clear-description` remove values. |
+| `agend env status <env-id>` | Inspect state without waking it. |
+| `agend env wake <env-id>` | Wake a sleeping environment. |
+| `agend env cold-reset <env-id> --reason TEXT` | Recover a genuinely stuck environment through a cold boot. |
+| `agend env delete <env-id>` | Permanently delete an environment and its data. |
+| `agend status` | Show account authentication status. |
 | `agend signup --email <email>` | Create an account and sign in with a password prompt. |
 | `agend login` | Authenticate through your browser. |
 | `agend login --email <email>` | Sign in with an email and password. |
@@ -333,33 +331,33 @@ agend exec 'pwd'
 | `agend account remove <email>` | Remove a saved account. |
 | `agend logout [--all]` | Remove the active account's local credentials, or all saved accounts. |
 
-Cold reset preserves the persistent data disk but discards guest memory, processes, sessions, and snapshots. It is a recovery operation. Creating, selecting, or executing in an environment can boot or wake it; `env status` is the read-only inspection path.
+Cold reset preserves the persistent data disk but discards guest memory, processes, sessions, and snapshots. It is a recovery operation. Connecting to a sleeping environment wakes it; `env status` is the read-only inspection path.
 
 ### Shell, files, and tasks
 
 | Command | Purpose |
 | --- | --- |
-| `agend connect [--shell COMMAND]` | Open a live interactive terminal. |
-| `agend watch [--typing-delay 40ms]` | Mirror the interactive session without sending input. |
-| `agend exec <command>` | Execute a remote command. |
-| `agend input <text>` | Answer a simple prompt; appends a newline. |
-| `agend resize <columns> <rows>` | Resize the active PTY. |
-| `agend interrupt` | Interrupt the active command/session. |
-| `agend ping` | Check connectivity and show backend version. |
-| `agend file-get <remote-path>` | Print remote file content to stdout. |
-| `agend file-put <remote-path> <content>` | Write supplied content to a remote file. |
-| `agend file-move <source> <destination>` | Move or rename a remote file. |
-| `agend task-output <task-id>` | Read background-task output. |
-| `agend task-stop <task-id>` | Stop a background task. |
+| `agend connect --env <env-id> [--shell COMMAND]` | Open a live interactive terminal. |
+| `agend watch --env <env-id> [--typing-delay 40ms]` | Mirror the interactive session without sending input. |
+| `agend exec --env <env-id> <command>` | Execute a remote command. |
+| `agend input --env <env-id> <text>` | Answer a simple prompt; appends a newline. |
+| `agend resize --env <env-id> <columns> <rows>` | Resize the active PTY. |
+| `agend interrupt --env <env-id>` | Interrupt the active command/session. |
+| `agend ping --env <env-id>` | Check connectivity and show backend version. |
+| `agend file-get --env <env-id> <remote-path>` | Print remote file content to stdout. |
+| `agend file-put --env <env-id> <remote-path> <content>` | Write supplied content to a remote file. |
+| `agend file-move --env <env-id> <source> <destination>` | Move or rename a remote file. |
+| `agend task-output --env <env-id> <task-id>` | Read background-task output. |
+| `agend task-stop --env <env-id> <task-id>` | Stop a background task. |
 
 `exec` supports `--timeout` **in milliseconds** (default: `30000`), `--head`, `--tail`, `--background`, and `--interactive`. For a live terminal, use `connect`; for an agent driving a REPL or TUI, use MCP's interactive tool workflow.
 
 For example:
 
 ```sh
-agend file-put /home/agend-user/hello.txt 'hello from agend'
-agend file-get /home/agend-user/hello.txt
-agend exec --timeout 60000 'python3 --version'
+agend file-put --env <env-id> /home/agend-user/hello.txt 'hello from agend'
+agend file-get --env <env-id> /home/agend-user/hello.txt
+agend exec --env <env-id> --timeout 60000 'python3 --version'
 ```
 
 `file-get` writes file metadata to stderr. `file-put` takes content, not a local filename; use MCP's `file_upload` for local file transfer. Both CLI file commands support `--encoding text` or `--encoding base64`; `file-put` also supports `--create-dirs`, `--overwrite`, and `--mode`.
@@ -383,7 +381,7 @@ A team owns shared environments. A lease gives a member exclusive access until i
 | `agend env heartbeat <env-id>` | Extend the lease. |
 | `agend env release <env-id>` | Release it. |
 
-When the selected environment belongs to a team, `agend mcp` attempts to acquire its lease, heartbeats while connected, and releases it on normal shutdown. A lease held by another member blocks access. A hard-killed client can leave a lease until its expiry.
+`agend mcp --env <env-id>` attempts to acquire a lease on that team environment, heartbeats while connected, and releases it on normal shutdown. A lease held by another member blocks access. A hard-killed client can leave a lease until its expiry.
 
 </details>
 
@@ -399,16 +397,16 @@ The updater verifies the signed checksum manifest and archive before replacing t
 | --- | --- |
 | Installer prints `agend setup claude`, or `config claude` fails | Use `agend config claude-code` or `agend config claude-desktop`. |
 | Agent cannot find the server | Check `agend version`, rerun `agend config <client>`, and restart its MCP integration. A manual configuration may need an absolute binary path. |
-| CLI has no selected environment | Run `agend env list`, then `agend env use <env-id>`. |
-| New environment is not reachable yet | Inspect `agend env status`; allow the tunnel to come online, then retry `agend ping`. |
+| CLI asks for an environment ID | Run `agend env list` and pass the ID to the command. |
+| New environment is not reachable yet | Inspect `agend env status <env-id>`; allow the tunnel to come online, then retry `agend ping --env <env-id>`. |
 | Input reports no active session | Start the app with `interactive: true`. Ordinary foreground commands do not keep stdin open for later tool calls. |
 | `connect` reports `no active session waiting for input` when you exit | This can occur intermittently in the current backend after a shell has run successfully. See the [verification report](docs/readme-verification.md); start a new `connect` session if you need to continue. |
 | Local file path is rejected | Keep it inside the MCP working directory, configure a narrow `AGEND_LOCAL_ROOT`, or check `AGEND_LOCAL_ACCESS`. Use `unrestricted` only when you intentionally accept access to every path available to your user. |
 | Browser preview URL does not open yet | Check that the service is running and bound to `0.0.0.0`; allow tunnel/DNS propagation, then inspect `port_list`. If the hostname still does not resolve, check your DNS resolver. |
-| Environment appears stuck | Inspect `env status` first. Use a cold reset only after ordinary reconnect/wake recovery is insufficient. |
+| Environment appears stuck | Inspect `agend env status <env-id>` first. Use a cold reset only after ordinary reconnect/wake recovery is insufficient. |
 | Corporate proxy blocks connectivity | Set `HTTPS_PROXY` / `HTTP_PROXY`; Go binaries do not use Windows system proxy settings. |
 
-Credentials and per-account environment selection live in `~/.config/agend/credentials.json`, with owner-only file permissions on Unix. On Windows, `~` is your user profile and access is governed by Windows filesystem permissions. For scripted email/password authentication, use `AGEND_PASSWORD`; the CLI prompts otherwise.
+Account credentials and per-environment session credentials live in `~/.config/agend/credentials.json`, with owner-only file permissions on Unix. On Windows, `~` is your user profile and access is governed by Windows filesystem permissions. For scripted email/password authentication, use `AGEND_PASSWORD`; the CLI prompts otherwise.
 
 ## Development
 
