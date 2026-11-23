@@ -36,7 +36,7 @@ $env:AGEND_API_TOKEN = $agendAccount.token
 Start the MCP server with:
 
 ```sh
-docker run --rm -i --init --env AGEND_API_TOKEN ghcr.io/agend-sh/agend-mcp:1.2.14
+docker run --rm -i --init --env AGEND_API_TOKEN ghcr.io/agend-sh/agend-mcp:2.0.0
 ```
 
 Use `-i` without `-t`: the MCP transport requires plain standard input/output.
@@ -52,7 +52,7 @@ For clients using an `mcpServers` configuration:
       "command": "docker",
       "args": [
         "run", "--rm", "-i", "--init", "--env", "AGEND_API_TOKEN",
-        "ghcr.io/agend-sh/agend-mcp:1.2.14"
+        "ghcr.io/agend-sh/agend-mcp:2.0.0"
       ]
     }
   }
@@ -77,7 +77,7 @@ to upload or download files from your computer, for example:
 ```sh
 docker run --rm -i --init --env AGEND_API_TOKEN \
   --mount "type=bind,source=$(pwd),target=/workspace" \
-  ghcr.io/agend-sh/agend-mcp:1.2.14
+  ghcr.io/agend-sh/agend-mcp:2.0.0
 ```
 
 Local tool paths must be inside `/workspace`. The container runs as UID/GID
@@ -92,11 +92,11 @@ You can use an Agend credential volume instead of passing a token:
 ```sh
 docker run --rm -it \
   --mount type=volume,source=agend-mcp-config,target=/home/agend/.config/agend \
-  ghcr.io/agend-sh/agend-mcp:1.2.14 login --email you@example.com
+  ghcr.io/agend-sh/agend-mcp:2.0.0 login --email you@example.com
 
 docker run --rm -i --init \
   --mount type=volume,source=agend-mcp-config,target=/home/agend/.config/agend \
-  ghcr.io/agend-sh/agend-mcp:1.2.14
+  ghcr.io/agend-sh/agend-mcp:2.0.0
 ```
 
 The first command prompts for your password and saves credentials in the
@@ -133,7 +133,7 @@ Then rerun the failed registry job. Later releases use the same public package.
 To publish an existing tagged version again, dispatch the workflow:
 
 ```sh
-gh workflow run publish-mcp.yml -R agend-sh/cli -f version=1.2.14
+gh workflow run publish-mcp.yml -R agend-sh/cli -f version=2.0.0
 ```
 
 The workflow checks out that exact release tag. It uses the repository's

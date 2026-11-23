@@ -78,7 +78,7 @@ installed:
 python3 mcpb/build.py
 ```
 
-The builder writes `dist/mcpb/agend-sh-1.2.14.mcpb`, its checksum, the generated
+The builder writes `dist/mcpb/agend-sh-2.0.0.mcpb`, its checksum, the generated
 manifest, the full server card, and a Smithery release payload. It exports all
 23 tool definitions from the exact source commit in `mcpb/server/image.json`.
 It never starts the bridge or contacts an Agend environment.
@@ -93,7 +93,7 @@ that connect to a sleeping guest are not labelled read-only.
 
 The archive has an explicit file list, a pinned image digest, and fixed ZIP
 timestamps. Rebuild after updating the image version, source commit, and
-digest together. This source currently packages Agend v1.2.14.
+digest together. This source currently packages Agend v2.0.0.
 
 Smithery accepts local stdio releases as an MCPB upload. Use
 `publish-payload.json` with the bundle in the

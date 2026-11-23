@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "agend-sh",
   "display_name": "agend-sh",
-  "version": "1.2.14",
+  "version": "2.0.0",
   "description": "Persistent Linux environments for AI agents, with interactive terminals and HTTPS previews.",
   "long_description": "Run commands, drive REPLs and terminal apps, edit files, collect background task output, and expose development servers through HTTPS previews. This bundle launches the published Agend CLI image locally through Docker. Requires Docker with Linux containers, Node.js 20+, an Agend account, and available environment quota. Register for a free seven-day account at https://agend.sh/account?signup=1, then authenticate with agend login. The bundle reads your active CLI account token locally at startup; an optional sensitive configuration field can override it. Every tool publishes behavior annotations and an output schema backed by structuredContent.text, while preserving its original text content. Interactive input_wait results describe observed terminal input-wait events, not application readiness. Local file transfers use the container's /workspace; host directories are not mounted automatically.",
   "author": {

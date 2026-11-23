@@ -3,7 +3,7 @@
   "name": "io.github.agend-sh/agend-sh",
   "title": "agend-sh",
   "description": "Persistent Linux environments for AI agents, with interactive terminals and HTTPS previews.",
-  "version": "1.2.14",
+  "version": "2.0.0",
   "websiteUrl": "https://agend.sh",
   "repository": {
     "url": "https://github.com/agend-sh/cli",
@@ -19,7 +19,7 @@
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/agend-sh/agend-mcp@sha256:4462e2571be0e69003e1be93255e04523342e1e5aa17482ec3d63bd7506bb82f",
+      "identifier": "ghcr.io/agend-sh/agend-mcp@sha256:77c2b18e2bb500320244605c0685e9d644b4bbbfefc8b93023014b41feb003c9",
       "transport": {
         "type": "stdio"
       },

@@ -1,5 +1,5 @@
 {
-  "version": "1.2.14",
-  "source_commit": "a4080e6f53309bd20e252aba2e1212af5d9792c2",
-  "image": "ghcr.io/agend-sh/agend-mcp@sha256:4462e2571be0e69003e1be93255e04523342e1e5aa17482ec3d63bd7506bb82f"
+  "version": "2.0.0",
+  "source_commit": "cb7e05a02d8ce6156b71f18af373e7b17a49143e",
+  "image": "ghcr.io/agend-sh/agend-mcp@sha256:77c2b18e2bb500320244605c0685e9d644b4bbbfefc8b93023014b41feb003c9"
 }
